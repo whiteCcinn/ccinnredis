@@ -48,7 +48,7 @@ public struct RedisError: Error, LocalizedError, Sendable, Equatable, CustomStri
         return RedisError(kind, message.isEmpty ? "Server error" : message, code: code)
     }
 
-    static func isAuthenticationFailure(_ message: String) -> Bool {
+    public static func isAuthenticationFailure(_ message: String) -> Bool {
         let upper = message.uppercased()
         return upper.hasPrefix("WRONGPASS") || upper.hasPrefix("NOAUTH") || upper.hasPrefix("ERR INVALID PASSWORD")
             || upper.hasPrefix("INVALIDPASSWORD") || upper.contains("AUTHENTICATION REQUIRED")
@@ -69,7 +69,7 @@ public struct RedisError: Error, LocalizedError, Sendable, Equatable, CustomStri
         return Self.looksLikeUnavailableCommand(message)
     }
 
-    static func looksLikeUnavailableCommand(_ message: String) -> Bool {
+    public static func looksLikeUnavailableCommand(_ message: String) -> Bool {
         let lower = message.lowercased()
         return lower.contains("unknown command") || lower.contains("unknown subcommand")
             || lower.contains("not allowed") || lower.contains("not supported") || lower.contains("unsupported command")

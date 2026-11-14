@@ -1,0 +1,29 @@
+# Envoy Redis proxy in front of ccinnredis-it-proxy-b1 (integration tests only).
+static_resources:
+  listeners:
+    - name: redis_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 6379 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.redis_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+                stat_prefix: ccinnredis
+                settings:
+                  op_timeout: 5s
+                prefix_routes:
+                  catch_all_route:
+                    cluster: redis_backend
+  clusters:
+    - name: redis_backend
+      type: STRICT_DNS
+      connect_timeout: 2s
+      lb_policy: MAGLEV
+      load_assignment:
+        cluster_name: redis_backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: ccinnredis-it-proxy-b1, port_value: 6379 }
