@@ -20,7 +20,6 @@ struct CcinnRedisApp: App {
 
         Settings {
             SettingsView()
-                .frame(width: 480)
                 .tint(Theme.accent)
         }
     }
@@ -273,6 +272,18 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettingsView()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            MCPSettingsView(store: AppServices.shared.profiles)
+                .tabItem { Label("AI Access", systemImage: "sparkles") }
+        }
+        .frame(width: 620)
+    }
+}
+
+private struct GeneralSettingsView: View {
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
     @AppStorage("scanPageSize") private var scanPageSize = 1000
     @AppStorage("initialKeyLimit") private var initialKeyLimit = 20_000
@@ -290,12 +301,78 @@ struct SettingsView: View {
             }
             LabeledContent("Saved connections") {
                 Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([ProfileRepository.defaultDirectory])
+                    NSWorkspace.shared.activateFileViewerSelecting([AppServices.shared.dataDirectory])
                 }
             }
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+}
+
+/// Settings → AI Access: per-profile MCP access and ready-to-paste client configuration.
+struct MCPSettingsView: View {
+    let store: ProfileStore
+    @State private var copied: String?
+
+    private var command: String { Bundle.main.executablePath ?? "/Applications/CcinnRedis.app/Contents/MacOS/CcinnRedis" }
+
+    var body: some View {
+        Form {
+            Section {
+                Text("CcinnRedis includes an MCP server so AI assistants can inspect your Redis data through the connections you enable here. It runs the same app binary in `mcp` mode over stdio, reads secrets from the Keychain, enforces read-only access itself (allow-listed commands, bounded results, timeouts) and logs every call to mcp-audit.jsonl.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Connections") {
+                if store.profiles.isEmpty {
+                    Text("No saved connections yet.").foregroundStyle(.secondary)
+                }
+                ForEach(store.profiles) { profile in
+                    Picker(selection: Binding(get: { profile.mcpAccess }, set: { store.setMCPAccess($0, for: profile) })) {
+                        ForEach(MCPAccess.allCases) { Text($0.title).tag($0) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(profile.displayName)
+                            Text(profile.hostSummary).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Section("Command") {
+                snippet("Executable", command)
+            }
+            Section("Client configuration") {
+                snippet("Claude Code", "claude mcp add ccinnredis -- \"\(command)\" mcp")
+                snippet("Codex (~/.codex/config.toml)", "[mcp_servers.ccinnredis]\ncommand = \"\(command)\"\nargs = [\"mcp\"]")
+                snippet("Claude Desktop / JSON", "{\"mcpServers\": {\"ccinnredis\": {\"command\": \"\(command)\", \"args\": [\"mcp\"]}}}")
+                Text("Add `--read-only` to the args to cap every connection at read-only, or `--profile <name>` to set a default connection.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+        .frame(minHeight: 520)
+    }
+
+    private func snippet(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.callout.weight(.medium))
+                Spacer()
+                Button(copied == title ? "Copied" : "Copy") {
+                    Pasteboard.copy(text)
+                    copied = title
+                }
+                .controlSize(.small)
+            }
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        }
     }
 }
 

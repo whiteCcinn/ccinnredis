@@ -163,6 +163,7 @@ private struct ProfileRow: View {
             if profile.ssh != nil { Image(systemName: "network").foregroundStyle(.secondary).help("SSH tunnel") }
             if profile.tls != nil { Image(systemName: "lock.shield").foregroundStyle(.green).help("TLS") }
             if profile.readOnly { Image(systemName: "lock").foregroundStyle(.orange).help("Read-only") }
+            if profile.mcpAccess != .disabled { Image(systemName: "sparkles").foregroundStyle(.purple).help("AI access via MCP: \(profile.mcpAccess.title)") }
             if profile.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow).imageScale(.small) }
         }
         .padding(.vertical, 2)
@@ -265,6 +266,16 @@ struct ConnectionEditorView: View {
                         Section("SSH Tunnel") {
                             Toggle("Connect through an SSH tunnel", isOn: $draft.sshEnabled)
                             if draft.sshEnabled { sshFields }
+                        }
+                        Section {
+                            Picker("AI access via MCP", selection: $draft.profile.mcpAccess) {
+                                ForEach(MCPAccess.allCases) { Text($0.title).tag($0) }
+                            }
+                        } header: {
+                            Text("AI Access")
+                        } footer: {
+                            Text("Lets AI assistants (Claude Code, Codex, Claude Desktop…) use this connection through `CcinnRedis mcp`. Read-only allows bounded reads and an allow-listed read command; Read & write adds set/delete/expire tools. See Settings → AI Access.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         Section("Safety & timeouts") {
                             Toggle("Read-only (block write commands before they are sent)", isOn: $draft.profile.readOnly)

@@ -67,6 +67,12 @@ final class ProfileStore {
         try? persist()
     }
 
+    func setMCPAccess(_ access: MCPAccess, for profile: ConnectionProfile) {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[index].mcpAccess = access
+        try? persist()
+    }
+
     func markConnected(_ id: UUID) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].lastConnectedAt = Date()

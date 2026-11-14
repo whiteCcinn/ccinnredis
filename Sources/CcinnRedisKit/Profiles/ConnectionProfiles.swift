@@ -51,6 +51,33 @@ public enum ProxyChoice: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Whether AI clients may use a profile through the MCP server (opt-in per profile).
+public enum MCPAccess: String, Codable, CaseIterable, Identifiable, Sendable, Comparable {
+    case disabled
+    case readOnly
+    case readWrite
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .disabled: "Disabled"
+        case .readOnly: "Read-only"
+        case .readWrite: "Read & write"
+        }
+    }
+
+    private var rank: Int {
+        switch self {
+        case .disabled: 0
+        case .readOnly: 1
+        case .readWrite: 2
+        }
+    }
+
+    public static func < (lhs: MCPAccess, rhs: MCPAccess) -> Bool { lhs.rank < rhs.rank }
+}
+
 /// A saved connection. Never contains secrets: those live in a `SecretStore` (the Keychain).
 public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
@@ -77,6 +104,8 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var readOnly: Bool
     /// Key-tree grouping delimiter.
     public var delimiter: String
+    /// AI access through `CcinnRedis mcp` (default: disabled).
+    public var mcpAccess: MCPAccess
     public var connectTimeout: Double
     public var commandTimeout: Double
     public var createdAt: Date
@@ -107,6 +136,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         ssh = nil
         readOnly = false
         delimiter = ":"
+        mcpAccess = .disabled
         connectTimeout = 10
         commandTimeout = 30
         createdAt = Date()
@@ -116,7 +146,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, color, isFavorite, mode, host, port, useUnixSocket, sentinelNodes, sentinelMasterName, sentinelRole
         case sentinelUsername, clusterSeeds, scanReplicas, addressMapText, proxy, username, database, protocolPreference
-        case tls, ssh, readOnly, delimiter, connectTimeout, commandTimeout, createdAt, lastConnectedAt
+        case tls, ssh, readOnly, delimiter, mcpAccess, connectTimeout, commandTimeout, createdAt, lastConnectedAt
     }
 
     /// Tolerant decoding: fields added in later versions get defaults.
@@ -145,6 +175,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         ssh = try container.decodeIfPresent(SSHTunnelConfiguration.self, forKey: .ssh)
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
         delimiter = try container.decodeIfPresent(String.self, forKey: .delimiter) ?? ":"
+        mcpAccess = (try? container.decodeIfPresent(MCPAccess.self, forKey: .mcpAccess)) ?? .disabled
         connectTimeout = try container.decodeIfPresent(Double.self, forKey: .connectTimeout) ?? 10
         commandTimeout = try container.decodeIfPresent(Double.self, forKey: .commandTimeout) ?? 30
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()

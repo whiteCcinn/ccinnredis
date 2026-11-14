@@ -17,6 +17,7 @@ struct ProfileTests {
         #expect(profile.protocolPreference == .auto)
         #expect(!profile.readOnly)
         #expect(profile.delimiter == ":")
+        #expect(profile.mcpAccess == .disabled)
     }
 
     @Test func secretsNeverReachTheProfileFile() throws {
@@ -50,6 +51,7 @@ struct ProfileTests {
         #expect(decoded.first?.port == 6380)
         #expect(decoded.first?.mode == .standalone)
         #expect(decoded.first?.delimiter == ":")
+        #expect(decoded.first?.mcpAccess == .disabled)
     }
 
     @Test func buildsClientConfigurationPerMode() throws {
