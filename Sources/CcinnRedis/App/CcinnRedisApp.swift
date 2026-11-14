@@ -140,7 +140,6 @@ enum LaunchArguments {
     static func consume(into session: WindowSession, store: ProfileStore) {
         guard !consumed else { return }
         consumed = true
-        if has("--demo-profiles") { DemoProfiles.install(into: store) }
         var profile: ConnectionProfile?
         var secrets = ProfileSecrets(password: value("--password"))
         if let name = value("--profile"), let saved = store.profiles.first(where: { $0.displayName == name }) {
@@ -188,7 +187,12 @@ enum LaunchArguments {
                 browser.setExpanded(Array(accumulated.utf8), true)
             }
         }
-        if let key = value("--key") { workspace.openKey(RedisKey(key)) }
+        if let key = value("--key") {
+            workspace.openKey(RedisKey(key))
+            if value("--section") == "groups", case let .key(model)? = workspace.selectedTab?.kind {
+                model.streamSection = .groups
+            }
+        }
         switch value("--open") {
         case "console": workspace.openConsole(initial: value("--console"))
         case "connection": workspace.showConnectionInfo = true

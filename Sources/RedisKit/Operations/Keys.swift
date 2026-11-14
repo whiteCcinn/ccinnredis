@@ -42,7 +42,7 @@ public struct KeyType: Sendable, Hashable, RawRepresentable, CustomStringConvert
         case "list": "LIST"
         case "set": "SET"
         case "zset": "ZSET"
-        case "stream": "XADD"
+        case "stream": "STRM"
         default: isJSON ? "JSON" : String(rawValue.prefix(4)).uppercased()
         }
     }
@@ -117,7 +117,8 @@ extension RedisClient {
         let wantsMemory = caps.supports(.memoryUsage)
         if wantsEncoding { commands.append(RedisCommand("OBJECT", ["ENCODING", .key(key)])) }
         if wantsMemory { commands.append(RedisCommand("MEMORY", ["USAGE", .key(key), "SAMPLES", "5"])) }
-        commands.append(RedisCommand("OBJECT", ["IDLETIME", .key(key)]))
+        // OBJECT is refused (connection dropped) by proxies such as twemproxy: only when proven available.
+        if wantsEncoding { commands.append(RedisCommand("OBJECT", ["IDLETIME", .key(key)])) }
         let replies = try await pipeline(commands)
         let type = replies[0].string.map(KeyType.init(rawValue:)) ?? .none
         var details = KeyDetails(key: key, type: type, ttlMilliseconds: Self.ttl(from: replies[1]))
@@ -133,7 +134,7 @@ extension RedisClient {
             }
             index += 1
         }
-        details.idleSeconds = replies[index].int
+        if wantsEncoding { details.idleSeconds = replies[index].int }
         if type.exists, let lengthCommand = Self.lengthCommand(for: type, key: key) {
             details.length = try? await executeAllowingErrors(lengthCommand).int
         }

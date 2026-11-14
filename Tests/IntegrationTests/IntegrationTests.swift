@@ -455,6 +455,11 @@ struct ProxyIntegrationTests {
         try await client.setString(key, Array("x".utf8), keepTTL: false)
         #expect(try await client.delete([key]) == 1)
         #expect(try await client.metadata(for: [RedisKey("proxy:list:1")]).first?.type == .list)
+        // The key editor header must not send commands the proxy drops (OBJECT, MEMORY).
+        let details = try await client.details(for: RedisKey("proxy:hash:3"))
+        #expect(details.type == .hash)
+        #expect(details.length == 1)
+        #expect(try await client.execute(RedisCommand("GET", ["proxy:key:7"])).string == "value-7")
     }
 
     @Test func envoyDegradesGracefully() async throws {

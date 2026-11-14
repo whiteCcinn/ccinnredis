@@ -185,7 +185,7 @@ public struct Capabilities: Sendable, Equatable {
             case .info, .scan, .scanType, .keys, .dbsize, .select, .config, .clientList, .clientKill, .clientKillByID,
                  .slowlog, .slowlogClientInfo, .pubsub, .pubsubIntrospection, .shardedPubSub, .latency, .modules, .acl,
                  .functions, .commandInfo, .commandDocs, .monitor, .memoryStats, .clientTracking, .clusterShards, .role,
-                 .resp3, .memoryUsage, .objectFreq, .rename, .flushAsync:
+                 .resp3, .memoryUsage, .objectEncoding, .objectFreq, .rename, .flushAsync:
                 true
             default:
                 false

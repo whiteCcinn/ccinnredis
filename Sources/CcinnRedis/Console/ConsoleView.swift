@@ -47,7 +47,7 @@ struct ConsoleView: View {
             HStack(alignment: .top, spacing: 6) {
                 Text(">").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundStyle(Theme.accent).padding(.top, 3)
                 ConsoleInput(model: model)
-                    .frame(minHeight: 22, maxHeight: 110)
+                    .frame(height: min(110, CGFloat(max(1, model.input.split(separator: "\n", omittingEmptySubsequences: false).count)) * 17 + 8))
                 Button { model.submit() } label: { Image(systemName: "return") }
                     .buttonStyle(.borderless)
                     .disabled(model.isRunning)

@@ -107,6 +107,7 @@ final class AppServices {
         if let index = arguments.firstIndex(of: "--profiles-directory"), arguments.indices.contains(index + 1) {
             dataDirectory = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
             profiles = ProfileStore(repository: ProfileRepository(directory: dataDirectory, secrets: InMemorySecretStore()))
+            if arguments.contains("--demo-profiles") { DemoProfiles.install(into: profiles) }
         } else {
             dataDirectory = ProfileRepository.defaultDirectory
             profiles = ProfileStore(repository: ProfileRepository())

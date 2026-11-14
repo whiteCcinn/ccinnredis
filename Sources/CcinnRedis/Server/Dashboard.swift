@@ -82,7 +82,11 @@ final class DashboardModel {
         if let previous = previousHits {
             let deltaHits = hits - previous.hits
             let deltaMisses = misses - previous.misses
-            if deltaHits + deltaMisses > 0 { ratio = deltaHits / (deltaHits + deltaMisses) * 100 }
+            if deltaHits + deltaMisses > 0 {
+                ratio = deltaHits / (deltaHits + deltaMisses) * 100
+            } else if hits + misses > 0 {
+                ratio = hits / (hits + misses) * 100 // idle interval: lifetime ratio
+            }
         } else if hits + misses > 0 {
             ratio = hits / (hits + misses) * 100
         }

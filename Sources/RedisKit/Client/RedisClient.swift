@@ -400,6 +400,7 @@ public final class RedisClient: Sendable {
             (.clientList, RedisCommand("CLIENT", ["LIST"])),
             (.slowlog, RedisCommand("SLOWLOG", ["LEN"])),
             (.memoryUsage, RedisCommand("MEMORY", ["USAGE", "__ccinnredis_probe__"])),
+            (.objectEncoding, RedisCommand("OBJECT", ["ENCODING", "__ccinnredis_probe__"])),
             (.pubsubIntrospection, RedisCommand("PUBSUB", ["CHANNELS", "__ccinnredis_probe__"])),
             (.commandInfo, RedisCommand("COMMAND", ["COUNT"])),
             (.modules, RedisCommand("MODULE", ["LIST"])),
@@ -443,7 +444,7 @@ public final class RedisClient: Sendable {
                     if feature == .slowlog { capabilities.markAvailable(.slowlogClientInfo) }
                 }
             } catch {
-                capabilities.markUnavailable(feature, reason: "\(name) closed the connection when it received \(command.qualifiedName), so \(feature.title.lowercased()) is not available.")
+                capabilities.markUnavailable(feature, reason: "\(name) closes the connection when it receives \(command.qualifiedName). \(feature.title) is not available through it.")
                 connection = nil
             }
             if feature == .pubsub, let used = connection {

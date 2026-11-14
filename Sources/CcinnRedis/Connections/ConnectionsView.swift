@@ -25,6 +25,9 @@ struct ConnectionsView: View {
         .onAppear {
             if LaunchArguments.has("--new-connection") {
                 newConnection()
+            } else if let name = LaunchArguments.value("--edit-profile"), let profile = store.profiles.first(where: { $0.displayName == name }) {
+                selection = profile.id
+                draft = ConnectionDraft(profile: profile, store: store)
             } else if draft == nil, let first = store.favorites.first ?? store.recents.first ?? store.others.first {
                 selection = first.id
                 draft = ConnectionDraft(profile: first, store: store)
@@ -276,6 +279,7 @@ struct ConnectionEditorView: View {
                         } footer: {
                             Text("Lets AI assistants (Claude Code, Codex, Claude Desktop…) use this connection through `CcinnRedis mcp`. Read-only allows bounded reads and an allow-listed read command; Read & write adds set/delete/expire tools. See Settings → AI Access.")
                                 .font(.caption).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         Section("Safety & timeouts") {
                             Toggle("Read-only (block write commands before they are sent)", isOn: $draft.profile.readOnly)
@@ -361,6 +365,7 @@ struct ConnectionEditorView: View {
             } footer: {
                 Text("Replicas are detected automatically (read-only). A cluster node is detected and switched to cluster routing. Proxies (twemproxy, Codis, Predixy, Envoy, cloud endpoints) are detected and their missing features explained.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .sentinel:
             Section {
@@ -378,6 +383,7 @@ struct ConnectionEditorView: View {
                 Text("Sentinel")
             } footer: {
                 Text("The master is resolved with SENTINEL get-master-addr-by-name and followed after failovers.").font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .cluster:
             Section {
@@ -389,17 +395,24 @@ struct ConnectionEditorView: View {
                 Text("Cluster")
             } footer: {
                 Text("Slots are loaded from CLUSTER SHARDS/SLOTS/NODES; MOVED and ASK redirects are followed; keys are scanned on every master.").font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
     private var addressMapField: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextField("Address map", text: $draft.profile.addressMapText, prompt: Text("172.18.0.5:6379 => 127.0.0.1:7001"), axis: .vertical)
-                .lineLimit(1...5)
-                .font(Theme.monospacedSmall)
-            Text("Rewrites addresses announced by nodes (Docker, NAT). One rule per line; host-only rules keep the port.")
-                .font(.caption).foregroundStyle(.secondary)
+        LabeledContent {
+            VStack(alignment: .trailing, spacing: 4) {
+                TextField("", text: $draft.profile.addressMapText, prompt: Text("172.18.0.5:6379 => 127.0.0.1:7001"), axis: .vertical)
+                    .labelsHidden()
+                    .lineLimit(1...5)
+                    .font(Theme.monospacedSmall)
+                    .multilineTextAlignment(.trailing)
+                Text("Rewrites addresses announced by nodes (Docker, NAT). One rule per line; host-only rules keep the port.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        } label: {
+            Text("Address map")
         }
     }
 

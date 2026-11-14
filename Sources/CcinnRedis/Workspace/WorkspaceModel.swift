@@ -156,7 +156,10 @@ final class WorkspaceModel {
     var isReadOnly: Bool { client.isReadOnly }
     var connectionName: String { profile.displayName }
 
-    var versionLabel: String { client.serverInfo.displayName }
+    var versionLabel: String {
+        if client.serverInfo.versionString.isEmpty, client.deployment.isProxy { return "Backend version hidden" }
+        return client.serverInfo.displayName
+    }
 
     // MARK: Lifecycle
 

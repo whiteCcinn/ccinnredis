@@ -112,10 +112,18 @@ extension NSColor {
     static let consoleMeta = adaptive(light: .hex(0x7C3AED), dark: .hex(0xC4A1FF))
 }
 
+@MainActor
 enum Format {
-    static func bytes(_ value: Int64?) -> String {
+    @MainActor private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        formatter.allowsNonnumericFormatting = false
+        return formatter
+    }()
+
+    @MainActor static func bytes(_ value: Int64?) -> String {
         guard let value else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: max(0, value), countStyle: .binary)
+        return byteFormatter.string(fromByteCount: max(0, value))
     }
 
     static func count(_ value: Int64?) -> String {
