@@ -21,8 +21,8 @@ First public release.
 - Console with redis-cli compatible tokenizer and reply formatting, completion (commands, subcommands, options, keys) with syntax hints, redacted per-profile history, `SUBSCRIBE`/`MONITOR` streaming and cluster routing.
 - Live dashboard with Swift Charts, `INFO`, slow log, clients (kill), configuration, cluster topology with slot coverage, Pub/Sub viewer and publisher.
 - Memory analysis by rate-limited sampling (`MEMORY USAGE`, `DEBUG OBJECT` or length estimates) with totals by type, prefix and TTL, and CSV export.
-- Safety: confirmations for destructive operations, typed confirmation for `FLUSHDB`/`FLUSHALL`.
-- **MCP server for AI clients**: `CcinnRedis mcp [--profile <name|id>] [--read-only]` with per-connection opt-in, an app-enforced read-only command policy, bounded results, time limits, cancellation and an audit log; Settings → AI Access with Claude Code, Codex and Claude Desktop snippets.
+- Safety: confirmations for destructive operations, typed confirmation for `FLUSHDB`/`FLUSHALL` (the connection name when the selected database is not known); read-only mode is an allowlist; list edits verify the element they change (`WATCH`/`MULTI`), so a concurrently modified list is never edited at the wrong index.
+- **MCP server for AI clients**: `CcinnRedis mcp [--profile <name|id>] [--read-only]` with per-connection opt-in, an app-enforced read-only command policy, bounded reads (no whole-collection replies, ranges and counts capped), redaction of secrets, time limits, cancellation and a multi-process-safe audit log; Settings → AI Access with Claude Code, Codex and Claude Desktop snippets.
 
 ### Notes
 
