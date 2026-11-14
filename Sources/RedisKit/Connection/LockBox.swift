@@ -1,6 +1,7 @@
 import os
 
 /// Small wrapper over `OSAllocatedUnfairLock` for `Sendable` state shared across tasks.
+/// Bodies run under the lock and must be short and non-blocking.
 final class OSAllocatedUnfairLockBox<State: Sendable>: Sendable {
     private let lock: OSAllocatedUnfairLock<State>
 
@@ -8,8 +9,8 @@ final class OSAllocatedUnfairLockBox<State: Sendable>: Sendable {
         lock = OSAllocatedUnfairLock(initialState: initial)
     }
 
-    func withLock<R: Sendable>(_ body: @Sendable (inout State) throws -> R) rethrows -> R {
-        try lock.withLock(body)
+    func withLock<R>(_ body: (inout State) throws -> R) rethrows -> R {
+        try lock.withLockUnchecked(body)
     }
 
     var value: State { lock.withLock { $0 } }

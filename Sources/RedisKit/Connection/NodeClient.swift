@@ -46,7 +46,13 @@ public final class NodeClient: Sendable {
     public func withConnection<T: Sendable>(_ body: (RedisConnection) async throws -> T) async throws -> T {
         var attempt = 0
         while true {
-            let connection = try await pool.checkout()
+            let connection: RedisConnection
+            do {
+                connection = try await pool.checkout()
+            } catch let error as RedisError where error.isConnectionFailure {
+                // Nothing was sent: callers may safely retry elsewhere (failover, topology refresh).
+                throw RedisError(error.kind, error.message, code: RedisError.connectStageCode)
+            }
             if attempt < 2, await connection.idleDuration > Self.healthCheckAfter {
                 do {
                     _ = try await connection.pipeline([RedisCommand("PING")], timeout: 3)

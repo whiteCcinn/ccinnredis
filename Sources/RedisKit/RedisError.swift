@@ -81,6 +81,11 @@ public struct RedisError: Error, LocalizedError, Sendable, Equatable, CustomStri
     /// `-NOPERM` (ACL).
     public var isPermissionDenied: Bool { code?.uppercased() == "NOPERM" || message.uppercased().hasPrefix("NOPERM") }
 
+    static let connectStageCode = "CONNECT"
+
+    /// The failure happened while establishing a connection, so no command was sent.
+    public var isConnectStage: Bool { code == Self.connectStageCode }
+
     /// Network-level failures that happened before or instead of a reply.
     public var isConnectionFailure: Bool {
         switch kind {
