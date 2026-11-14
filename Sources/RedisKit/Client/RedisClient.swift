@@ -245,6 +245,11 @@ public final class RedisClient: Sendable {
         } catch let error as RedisError where error.isConnectionFailure && !error.isConnectStage {
             infoFailure = .dropped
         }
+        if case let .message(message) = infoFailure, RedisError.isAuthenticationFailure(message) {
+            // Pre-6.0 servers answer HELLO with "unknown command" even to unauthenticated clients and only
+            // reveal the missing password on the next command.
+            throw RedisError(.authentication, "The server requires a password. Enter the password (and ACL user if any) for this connection.", code: "NOAUTH")
+        }
 
         let handshake = node.firstHandshake
         var server = ServerInfo.unknown
@@ -257,7 +262,7 @@ public final class RedisClient: Sendable {
         if let note = handshake?.authenticationNote { notes.append(note) }
 
         // Deployment.
-        let deployment: Deployment
+        var deployment: Deployment
         var infoPermissionDenied = false
         var infoDisabled = false
         if case let .proxy(flavor) = configuration.proxyHint {
@@ -278,6 +283,11 @@ public final class RedisClient: Sendable {
         } else {
             deployment = try modeDeployment(server: server, endpoint: endpoint, notes: &notes)
         }
+        // A backend reporting Redis ≥ 6.0 through INFO while HELLO is unknown means a proxy is forwarding INFO.
+        if !deployment.isProxy, let version = server.version, version >= ServerVersion(6, 0, 0),
+           let reason = handshake?.helloFallbackReason, RedisError.looksLikeUnavailableCommand(reason) {
+            deployment = .proxy(ProxyDetector.classify(infoError: .message(reason), helloDropped: false))
+        }
         if case let .proxy(flavor) = deployment {
             notes.append("Connected through \(flavor == .unknown ? "a proxy" : flavor.displayName). Features the proxy does not forward are disabled.")
         }
@@ -293,14 +303,23 @@ public final class RedisClient: Sendable {
         var extraSpecs: [String: CommandSpec] = [:]
         if deployment.isProxy {
             if info != nil { capabilities.markAvailable(.info) }
-            await probeProxyFeatures(node: node, flavor: deploymentFlavor(deployment), capabilities: &capabilities)
+            try await probeProxyFeatures(node: node, flavor: deploymentFlavor(deployment), capabilities: &capabilities)
         } else {
             var probes: [RedisCommand] = []
             let wantsList = (server.version ?? ServerVersion(7, 0, 0)) >= ServerVersion(7, 0, 0)
             if capabilities.supports(.commandInfo) { probes.append(wantsList ? RedisCommand("COMMAND", ["LIST"]) : RedisCommand("COMMAND")) }
             if capabilities.supports(.modules) { probes.append(RedisCommand("MODULE", ["LIST"])) }
             if !probes.isEmpty, let replies = try? await node.pipeline(probes) {
-                for (command, reply) in zip(probes, replies) where !reply.isError {
+                if let commandReply = zip(probes, replies).first(where: { $0.0.name == "COMMAND" })?.1,
+                   let message = commandReply.errorMessage, RedisError.looksLikeUnavailableCommand(message), !infoDisabled {
+                    // COMMAND exists since 2.8.13: refusing it means a proxy sits in front of the server.
+                    deployment = .proxy(ProxyDetector.classify(infoError: .message(message), helloDropped: false))
+                    notes.append("Connected through a proxy (it forwards INFO but rejects COMMAND). Features the proxy does not forward are disabled.")
+                    capabilities = Capabilities.derive(server: server, deployment: deployment)
+                    if info != nil { capabilities.markAvailable(.info) }
+                    try await probeProxyFeatures(node: node, flavor: deploymentFlavor(deployment), capabilities: &capabilities)
+                }
+                for (command, reply) in zip(probes, replies) where !reply.isError && !deployment.isProxy {
                     if command.name == "COMMAND" {
                         if command.arguments.count > 1 {
                             capabilities.apply(commandNames: Set((reply.array ?? []).compactMap { $0.string?.lowercased() }))
@@ -315,7 +334,8 @@ public final class RedisClient: Sendable {
                 }
             }
             // Name RESP2 connections only once we know this is a real Redis (proxies may drop CLIENT).
-            if handshake?.protocolVersion != 3, server.family != .unknown, (server.version ?? ServerVersion(0)) >= ServerVersion(2, 6, 9) {
+            if !deployment.isProxy, handshake?.protocolVersion != 3, server.family != .unknown,
+               (server.version ?? ServerVersion(0)) >= ServerVersion(2, 6, 9) {
                 await registry.updateAll { $0.setNameOnRESP2 = true }
             }
         }
@@ -365,7 +385,7 @@ public final class RedisClient: Sendable {
     }
 
     /// Probes what a proxy forwards, each command on a connection that is re-opened after a drop.
-    private func probeProxyFeatures(node: NodeClient, flavor: ProxyFlavor, capabilities: inout Capabilities) async {
+    private func probeProxyFeatures(node: NodeClient, flavor: ProxyFlavor, capabilities: inout Capabilities) async throws {
         let probes: [(Capabilities.Feature, RedisCommand)] = [
             (.scan, RedisCommand("SCAN", ["0", "COUNT", "1"])),
             (.scanType, RedisCommand("SCAN", ["0", "COUNT", "1", "TYPE", "string"])),
@@ -384,6 +404,18 @@ public final class RedisClient: Sendable {
         ]
         let name = flavor == .unknown ? "The proxy" : flavor.displayName
         var connection: RedisConnection?
+        // A peer that also drops PING and plain reads is not a proxy (e.g. a TLS port spoken to in clear text).
+        if flavor == .twemproxy || flavor == .unknown, let probe = try? await node.dedicatedConnection().0 {
+            let alive = (try? await probe.pipeline([RedisCommand("PING")], timeout: 5)) != nil
+            await probe.close()
+            if !alive, let second = try? await node.dedicatedConnection().0 {
+                let reads = (try? await second.pipeline([RedisCommand("EXISTS", ["__ccinnredis_probe__"])], timeout: 5)) != nil
+                await second.close()
+                if !reads {
+                    throw RedisError(.network, "\(node.endpoint) closes the connection for every command (HELLO, INFO, PING, EXISTS). If the server expects TLS, enable TLS for this connection; otherwise check that this is a Redis port.")
+                }
+            }
+        }
         for (feature, command) in probes {
             if feature == .scanType, !capabilities.supports(.scan) { continue }
             if connection == nil { connection = try? await node.dedicatedConnection().0 }

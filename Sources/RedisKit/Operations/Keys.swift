@@ -161,7 +161,20 @@ extension RedisClient {
         guard !keys.isEmpty else { return 0 }
         var total: Int64 = 0
         for chunk in stride(from: 0, to: keys.count, by: 500).map({ Array(keys[$0..<min($0 + 500, keys.count)]) }) {
-            let arguments = chunk.map(RedisArgument.key)
+            var unlinkable = chunk
+            if unlinkCrashesOnStreams {
+                // Redis 5.0.x asserts in lazyfree (raxNext, lazyfree.c) when UNLINK frees a stream whose consumer
+                // groups were all destroyed, killing the server. Streams are deleted with DEL there.
+                let types = try await pipeline(chunk.map { RedisCommand("TYPE", [.key($0)]) })
+                let streams = zip(chunk, types).filter { $1.string == "stream" }.map(\.0)
+                if !streams.isEmpty {
+                    total += try await execute(RedisCommand("DEL", streams.map(RedisArgument.key))).int ?? 0
+                    let streamSet = Set(streams)
+                    unlinkable = chunk.filter { !streamSet.contains($0) }
+                    if unlinkable.isEmpty { continue }
+                }
+            }
+            let arguments = unlinkable.map(RedisArgument.key)
             if capabilities.supports(.unlink) {
                 let reply = try await executeAllowingErrors(RedisCommand("UNLINK", arguments))
                 if let message = reply.errorMessage {
@@ -175,6 +188,12 @@ extension RedisClient {
             total += try await execute(RedisCommand("DEL", arguments)).int ?? 0
         }
         return total
+    }
+
+    /// Redis 5.x: UNLINK of a stream with destroyed consumer groups trips a server assertion.
+    var unlinkCrashesOnStreams: Bool {
+        let info = serverInfo
+        return info.family == .redis && info.version?.major == 5 && capabilities.supports(.unlink)
     }
 
     /// Renames a key. In a cluster both names must hash to the same slot.

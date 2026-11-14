@@ -36,6 +36,8 @@ seed_demo() {
   if version_at_least 2 8; then hll=1; fi
   awk -v streams="$streams" -v geo="$geo" -v hll="$hll" "$AWK_RESP"'
   BEGIN {
+    # Idempotent: aggregates are rebuilt from scratch on every run.
+    out("DEL|demo:hash:big|demo:list:queue|demo:list:big|demo:set:members|demo:zset:leaderboard|demo:stream:events|demo:hll:visitors|demo:geo:cities")
     out("SET|demo:string:hello|Hello, CcinnRedis!")
     out("SET|demo:string:json|{\"id\":42,\"name\":\"Ada\",\"tags\":[\"redis\",\"swift\"],\"active\":true,\"score\":98.5}")
     out("SET|demo:string:counter|42")

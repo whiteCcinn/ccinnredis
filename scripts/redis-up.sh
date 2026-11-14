@@ -98,11 +98,14 @@ if wants tls; then
   TLS_DIR="$ROOT/.build/it-tls"
   if [[ ! -f "$TLS_DIR/server.crt" ]]; then
     mkdir -p "$TLS_DIR"
-    openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.crt" -subj "/CN=ccinnredis-it-ca" >/dev/null 2>&1
-    openssl req -newkey rsa:2048 -nodes -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.csr" -subj "/CN=localhost" >/dev/null 2>&1
-    printf "subjectAltName=DNS:localhost,IP:127.0.0.1\n" > "$TLS_DIR/san.ext"
+    # macOS only trusts server certificates with SAN, serverAuth EKU and at most 825 days of validity.
+    printf "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n" > "$TLS_DIR/ca.ext"
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.csr" -subj "/CN=ccinnredis-it-ca" >/dev/null 2>&1
+    openssl x509 -req -in "$TLS_DIR/ca.csr" -signkey "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.crt" -days 800 -sha256 -extfile "$TLS_DIR/ca.ext" >/dev/null 2>&1
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.csr" -subj "/CN=localhost" >/dev/null 2>&1
+    printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\nbasicConstraints=CA:FALSE\n" > "$TLS_DIR/san.ext"
     openssl x509 -req -in "$TLS_DIR/server.csr" -CA "$TLS_DIR/ca.crt" -CAkey "$TLS_DIR/ca.key" -CAcreateserial \
-      -out "$TLS_DIR/server.crt" -days 3650 -extfile "$TLS_DIR/san.ext" >/dev/null 2>&1
+      -out "$TLS_DIR/server.crt" -days 800 -sha256 -extfile "$TLS_DIR/san.ext" >/dev/null 2>&1
     chmod 644 "$TLS_DIR"/*.key
   fi
   if ! is_running ccinnredis-it-tls; then

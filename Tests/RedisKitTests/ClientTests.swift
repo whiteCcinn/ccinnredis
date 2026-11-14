@@ -269,6 +269,32 @@ struct ProxyClientTests {
         await client.close()
     }
 
+    @Test func proxyForwardingInfoIsRecognisedByInconsistency() async throws {
+        // Modern Envoy forwards INFO from a 7.2 backend but rejects HELLO and COMMAND like an old server.
+        let backend = FakeRedisBackend { request in
+            switch request.name {
+            case "INFO": .reply(.bulk("# Server\nredis_version:7.2.17\nredis_mode:standalone\n"))
+            case "GET": .reply(.bulk("v"))
+            case "SCAN": .reply(.array([.bulk("0"), .array([])]))
+            case "PING": .reply(.simpleString("PONG"))
+            default: .reply(.err("ERR unknown command '\(request.name)', with args beginning with: "))
+            }
+        }
+        let client = try await RedisClient.connect(ClientConfiguration(mode: .standalone(Endpoint(host: "envoy"))), connector: backend.connector)
+        #expect(client.deployment.isProxy)
+        #expect(client.capabilities.supports(.scan))
+        #expect(client.capabilities.supports(.info))
+        #expect(!client.capabilities.supports(.config))
+        #expect(!client.capabilities.supports(.dbsize))
+        await client.close()
+
+        // Same with RESP2 preference (no HELLO): the COMMAND probe gives it away.
+        let resp2 = try await RedisClient.connect(ClientConfiguration(mode: .standalone(Endpoint(host: "envoy")), protocolPreference: .resp2),
+                                                  connector: backend.connector)
+        #expect(resp2.deployment.isProxy)
+        await resp2.close()
+    }
+
     @Test func envoyIsRecognisedFromItsErrors() async throws {
         let backend = FakeRedisBackend { request in
             switch request.name {
