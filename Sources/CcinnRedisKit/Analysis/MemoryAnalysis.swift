@@ -215,10 +215,10 @@ public struct RateLimiter: Sendable {
 
     /// Delay to wait after consuming `count` more items, given seconds elapsed since the start.
     public mutating func delay(afterConsuming count: Int, elapsed: Double) -> Duration {
-        consumed += count
+        consumed = consumed.addingReportingOverflow(max(0, count)).partialValue
         guard perSecond > 0 else { return .zero }
         let target = Double(consumed) / Double(perSecond)
-        let wait = target - elapsed
+        let wait = min(target - elapsed, 60)
         return wait > 0 ? .milliseconds(Int((wait * 1000).rounded())) : .zero
     }
 }
@@ -272,13 +272,18 @@ public actor MemoryAnalyzer {
         let start = ContinuousClock.now
         var sampled = 0
         var useMemoryUsage = client.capabilities.supports(.memoryUsage)
-        var useDebugObject = !useMemoryUsage && !client.isReadOnly
+        // DEBUG OBJECT is an admin command: never behind proxies (they reject or mis-route it) or read-only connections.
+        var useDebugObject = !useMemoryUsage && !client.isReadOnly && !client.deployment.isProxy
         while sampled < options.maxKeys, let batch = try await scanner.next() {
             try Task.checkCancellation()
             let keys = Array(batch.keys.prefix(options.maxKeys - sampled))
             guard !keys.isEmpty else {
+                // An empty page still cost the server a SCAN of `batchSize` slots: pace it like a full batch.
+                let elapsed = Self.seconds(since: start)
                 progress(Progress(sampled: sampled, completedNodes: batch.completedNodes, totalNodes: batch.totalNodes,
-                                  elapsed: Self.seconds(since: start), report: aggregator.report, method: method(useMemoryUsage, useDebugObject)))
+                                  elapsed: elapsed, report: aggregator.report, method: method(useMemoryUsage, useDebugObject)))
+                let delay = limiter.delay(afterConsuming: options.batchSize, elapsed: elapsed)
+                if delay > .zero { try await Task.sleep(for: delay) }
                 continue
             }
             var commands: [RedisCommand] = []
@@ -338,7 +343,7 @@ public actor MemoryAnalyzer {
             let elapsed = Self.seconds(since: start)
             progress(Progress(sampled: sampled, completedNodes: batch.completedNodes, totalNodes: batch.totalNodes, elapsed: elapsed,
                               report: aggregator.report, method: method(useMemoryUsage, useDebugObject)))
-            let delay = limiter.delay(afterConsuming: keys.count, elapsed: elapsed)
+            let delay = limiter.delay(afterConsuming: max(keys.count, options.batchSize), elapsed: elapsed)
             if delay > .zero { try await Task.sleep(for: delay) }
         }
         return aggregator.report

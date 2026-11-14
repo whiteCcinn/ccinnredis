@@ -8,31 +8,47 @@ public protocol MCPProfileSource: Sendable {
     func secrets(for profile: ConnectionProfile) -> ProfileSecrets
 }
 
-/// One `RedisClient` per profile for the life of the MCP process.
+/// One `RedisClient` per profile, reused while the profile and its secrets stay the same. Editing a
+/// connection in the app (address, password, read-only flag, MCP access) replaces the cached client.
 actor MCPClientPool {
     typealias Factory = @Sendable (ClientConfiguration) async throws -> RedisClient
-    private var clients: [UUID: RedisClient] = [:]
-    private var connecting: [UUID: Task<RedisClient, any Error>] = [:]
+
+    struct Identity: Equatable, Sendable {
+        let profile: ConnectionProfile
+        let secrets: ProfileSecrets
+        let access: MCPAccess
+    }
+
+    private var clients: [UUID: (identity: Identity, client: RedisClient)] = [:]
+    private var connecting: [UUID: (identity: Identity, task: Task<RedisClient, any Error>)] = [:]
     private let factory: Factory
 
     init(factory: @escaping Factory) {
         self.factory = factory
     }
 
-    func client(for profile: ConnectionProfile, configuration: ClientConfiguration) async throws -> RedisClient {
-        if let existing = clients[profile.id] { return existing }
-        if let pending = connecting[profile.id] { return try await pending.value }
+    func client(for identity: Identity, configuration: ClientConfiguration) async throws -> RedisClient {
+        let id = identity.profile.id
+        if let existing = clients[id] {
+            if existing.identity == identity { return existing.client }
+            clients[id] = nil
+            await existing.client.close()
+        }
+        if let pending = connecting[id], pending.identity == identity { return try await pending.task.value }
         let factory = factory
         let task = Task { try await factory(configuration) }
-        connecting[profile.id] = task
-        defer { connecting[profile.id] = nil }
+        connecting[id] = (identity, task)
+        defer { if connecting[id]?.task == task { connecting[id] = nil } }
         let client = try await task.value
-        clients[profile.id] = client
+        if let replaced = clients[id], replaced.identity != identity { await replaced.client.close() }
+        clients[id] = (identity, client)
         return client
     }
 
+    var cachedCount: Int { clients.count }
+
     func closeAll() async {
-        let all = clients.values
+        let all = clients.values.map(\.client)
         clients.removeAll()
         for client in all { await client.close() }
     }
@@ -49,6 +65,10 @@ public final class RedisMCPToolbox: MCPToolbox {
     private let audit: MCPAuditLog?
 
     static let writeTools: Set<String> = ["set_string", "delete_keys", "expire_key"]
+    /// Redis collections hold at most 2^32 - 1 elements.
+    static let maxOffset: Int64 = 4_294_967_295
+    /// Ten years; larger EXPIRE values overflow inside some servers.
+    static let maxTTLSeconds: Int64 = 315_360_000
 
     public init(profiles: any MCPProfileSource, defaultProfile: String? = nil, forceReadOnly: Bool = false,
                 clientFactory: @escaping @Sendable (ClientConfiguration) async throws -> RedisClient = { try await RedisClient.connect($0) },
@@ -60,6 +80,10 @@ public final class RedisMCPToolbox: MCPToolbox {
         self.audit = audit
     }
 
+    var cachedClientCount: Int {
+        get async { await pool.cachedCount }
+    }
+
     public func shutdown() async {
         await pool.closeAll()
         await audit?.close()
@@ -69,8 +93,9 @@ public final class RedisMCPToolbox: MCPToolbox {
 
     private var enabledProfiles: [ConnectionProfile] { source.profiles().filter { $0.mcpAccess != .disabled } }
 
+    /// Effective access: a read-only profile, or `--read-only`, never gets write tools.
     func access(of profile: ConnectionProfile) -> MCPAccess {
-        forceReadOnly ? min(profile.mcpAccess, .readOnly) : profile.mcpAccess
+        forceReadOnly || profile.readOnly ? min(profile.mcpAccess, .readOnly) : profile.mcpAccess
     }
 
     private func match(_ profile: ConnectionProfile, _ reference: String) -> Bool {
@@ -134,7 +159,7 @@ public final class RedisMCPToolbox: MCPToolbox {
         MCPToolDefinition(name: "get_key", title: "Get key value",
                           description: "Reads a key's value, type-aware and bounded: string (first 64 KB), hash/set (cursor pages), list and sorted set (offset/limit), stream (entries from an id), RedisJSON.",
                           inputSchema: schema(["key": MCPSchema.string("Key name"),
-                                               "offset": MCPSchema.integer("List/sorted set: start index (default 0)", minimum: 0),
+                                               "offset": MCPSchema.integer("List/sorted set: start index (default 0)", minimum: 0, maximum: RedisMCPToolbox.maxOffset),
                                                "limit": MCPSchema.integer("Elements to return (default 200, max 1000)", minimum: 1, maximum: 1000),
                                                "cursor": MCPSchema.string("Hash/set: cursor from a previous call; stream: start entry id")],
                                               required: ["key"]), readOnly: true),
@@ -157,7 +182,7 @@ public final class RedisMCPToolbox: MCPToolbox {
         MCPToolDefinition(name: "set_string", title: "Set string",
                           description: "SET a string value (optionally with a TTL). Only for connections with read & write MCP access.",
                           inputSchema: schema(["key": MCPSchema.string("Key name"), "value": MCPSchema.string("Value (UTF-8 text)"),
-                                               "ttl_seconds": MCPSchema.integer("Optional expiration in seconds", minimum: 1)], required: ["key", "value"]),
+                                               "ttl_seconds": MCPSchema.integer("Optional expiration in seconds", minimum: 1, maximum: RedisMCPToolbox.maxTTLSeconds)], required: ["key", "value"]),
                           readOnly: false, destructive: true, idempotent: true),
         MCPToolDefinition(name: "delete_keys", title: "Delete keys",
                           description: "Deletes up to 100 explicitly named keys (UNLINK when available). Only for read & write connections.",
@@ -166,7 +191,7 @@ public final class RedisMCPToolbox: MCPToolbox {
         MCPToolDefinition(name: "expire_key", title: "Set or remove TTL",
                           description: "Sets a key's TTL in seconds, or removes it when ttl_seconds is null. Only for read & write connections.",
                           inputSchema: schema(["key": MCPSchema.string("Key name"),
-                                               "ttl_seconds": MCPSchema.integer("Seconds, or null to persist", minimum: 1, nullable: true)], required: ["key", "ttl_seconds"]),
+                                               "ttl_seconds": MCPSchema.integer("Seconds, or null to persist", minimum: 1, maximum: RedisMCPToolbox.maxTTLSeconds, nullable: true)], required: ["key", "ttl_seconds"]),
                           readOnly: false, destructive: true, idempotent: true),
     ]
 
@@ -197,14 +222,17 @@ public final class RedisMCPToolbox: MCPToolbox {
                 connectionName = profile.displayName
                 let access = access(of: profile)
                 if Self.writeTools.contains(name), access != .readWrite {
-                    throw MCPToolError("Connection '\(profile.displayName)' is read-only for MCP\(forceReadOnly ? " (the server runs with --read-only)" : ""). Write tools are refused.")
+                    let why = forceReadOnly ? " (the server runs with --read-only)" : profile.readOnly ? " (the connection is marked read-only)" : ""
+                    throw MCPToolError("Connection '\(profile.displayName)' is read-only for MCP\(why). Write tools are refused.")
                 }
-                var configuration = try profile.clientConfiguration(secrets: source.secrets(for: profile))
+                let secrets = source.secrets(for: profile)
+                var configuration = try profile.clientConfiguration(secrets: secrets)
                 configuration.readOnly = configuration.readOnly || access != .readWrite
                 configuration.commandTimeout = Double(MCPLimits.maximumTimeout)
                 configuration.limits = RESPLimits(maxBulkLength: 64 * 1024 * 1024, maxAggregateCount: 2_000_000, maxDepth: 32, maxLineLength: 4 * 1024 * 1024)
                 configuration.clientName = "ccinnredis-mcp"
-                let client = try await pool.client(for: profile, configuration: configuration)
+                let client = try await pool.client(for: MCPClientPool.Identity(profile: profile, secrets: secrets, access: access),
+                                                   configuration: configuration)
                 let seconds = MCPLimits.timeout(arguments["timeout_seconds"])
                 let payload = try await Self.withTimeout(seconds: seconds) { [self] in
                     try await perform(name, client: client, arguments: arguments)
@@ -373,7 +401,7 @@ public final class RedisMCPToolbox: MCPToolbox {
     private func getKey(_ client: RedisClient, _ arguments: [String: JSONValue]) async throws -> JSONValue {
         let key = RedisKey(arguments["key"]?.string ?? "")
         let limit = MCPLimits.itemLimit(arguments["limit"])
-        let offset = Int(max(0, arguments["offset"]?.int ?? 0))
+        let offset = Int(min(max(0, arguments["offset"]?.int ?? 0), Self.maxOffset))
         let cursorArgument = arguments["cursor"]?.string
         let metadata = try await client.metadata(for: [key])
         guard let type = metadata.first?.type, type.exists else { throw MCPToolError("Key '\(key.display)' does not exist") }

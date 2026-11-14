@@ -97,7 +97,13 @@ public enum ReplyFormatter {
                 appendRaw(element, into: &output, budget: &budget, limits: limits, depth: depth + 1)
             }
         case let .map(entries):
+            guard depth < 32 else { return }
             for (index, entry) in entries.enumerated() {
+                if budget <= 0 {
+                    output += "\n… (\(entries.count - index) more)"
+                    return
+                }
+                budget -= 1
                 if index > 0 { output += "\n" }
                 appendRaw(entry.key, into: &output, budget: &budget, limits: limits, depth: depth + 1)
                 output += "\n"

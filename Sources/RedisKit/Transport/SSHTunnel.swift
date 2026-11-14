@@ -100,7 +100,7 @@ public final class SSHTunnel: Sendable {
         environment["SSH_ASKPASS"] = askPass
         environment["SSH_ASKPASS_REQUIRE"] = "force"
         environment["DISPLAY"] = environment["DISPLAY"] ?? ":0"
-        environment["CCINNREDIS_ASKPASS_SECRET"] = secret ?? ""
+        environment["CCINNREDIS_ASKPASS_SECRET"] = askPassSecret(for: configuration.authentication, secret: secret)
         environment["CCINNREDIS_PARENT_PID"] = String(getpid())
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
@@ -175,19 +175,27 @@ public final class SSHTunnel: Sendable {
             "-L", "127.0.0.1:\(localPort):\(forwardTarget)",
             "-p", String(configuration.port),
         ]
+        // Key and agent authentication must never fall back to password prompts: the askpass helper would
+        // otherwise answer them with the key passphrase and send it to the server.
+        let keyOnly = ["-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
         switch configuration.authentication {
         case .agent:
-            break
+            arguments += keyOnly
         case .password:
             arguments += ["-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PubkeyAuthentication=no"]
         case .privateKey:
             guard let path = configuration.privateKeyPath, !path.isEmpty else {
                 throw RedisError(.sshTunnel, "Choose a private key file for the SSH tunnel")
             }
-            arguments += ["-i", (path as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
+            arguments += ["-i", (path as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"] + keyOnly
         }
         arguments.append(user.isEmpty ? host : "\(user)@\(host)")
         return arguments
+    }
+
+    /// The secret the askpass helper may answer with: none for agent authentication.
+    static func askPassSecret(for authentication: SSHTunnelConfiguration.Authentication, secret: String?) -> String {
+        authentication == .agent ? "" : (secret ?? "")
     }
 
     /// Hosts and user names must not look like options and must not contain whitespace or control characters.

@@ -200,9 +200,9 @@ struct MCPPolicyTests {
     }
 
     @Test func readsAreAllowed() throws {
-        for line in ["GET a", "get a", "HGETALL h", "TYPE k", "TTL k", "SCAN 0 MATCH x* COUNT 10", "ZRANGE z 0 10 WITHSCORES", "XRANGE s - + COUNT 5",
+        for line in ["GET a", "get a", "TYPE k", "TTL k", "SCAN 0 MATCH x* COUNT 10", "ZRANGE z 0 10 WITHSCORES", "XRANGE s - + COUNT 5",
                      "INFO memory", "DBSIZE", "MEMORY USAGE k", "OBJECT ENCODING k", "SLOWLOG GET 10", "CLIENT LIST", "CONFIG GET maxmemory",
-                     "CLUSTER NODES", "CLUSTER SLOTS", "PING", "JSON.GET doc", "PUBSUB CHANNELS", "COMMAND COUNT", "ROLE", "SORT_RO l", "XREAD COUNT 1 STREAMS s 0"] {
+                     "CLUSTER NODES", "CLUSTER SLOTS", "PING", "JSON.GET doc", "PUBSUB CHANNELS", "COMMAND COUNT", "ROLE", "SORT_RO l LIMIT 0 10", "XREAD COUNT 1 STREAMS s 0"] {
             #expect(try verdict(line), "\(line) should be allowed")
         }
     }

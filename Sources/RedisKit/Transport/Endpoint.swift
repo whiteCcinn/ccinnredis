@@ -12,6 +12,15 @@ public struct Endpoint: Sendable, Hashable, Codable, CustomStringConvertible, Co
 
     public static func unixSocket(_ path: String) -> Endpoint { Endpoint(host: path, port: 0) }
 
+    /// A TCP endpoint from an address announced by a server (cluster topology, redirects, Sentinel).
+    /// Such hosts must never be interpreted as local Unix socket paths.
+    public static func announced(host: String, port: Int) -> Endpoint? {
+        let trimmed = host.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~"), (1...65_535).contains(port),
+              !trimmed.contains(where: { $0.isWhitespace || $0.isNewline }) else { return nil }
+        return Endpoint(host: trimmed, port: port)
+    }
+
     public var isUnixSocket: Bool { host.hasPrefix("/") || host.hasPrefix("~/") }
     public var isIPv6: Bool { !isUnixSocket && host.contains(":") }
 

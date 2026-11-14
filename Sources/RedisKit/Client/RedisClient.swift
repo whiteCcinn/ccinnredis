@@ -616,14 +616,35 @@ public final class RedisClient: Sendable {
 
     // MARK: Read-only enforcement (design D14)
 
+    /// Commands that are not flagged read-only but neither modify data nor the server.
+    static let readOnlyAllowedCommands: Set<String> = [
+        "INFO", "DBSIZE", "TIME", "LASTSAVE", "ROLE", "PING", "ECHO", "KEYS",
+        "SELECT", "AUTH", "HELLO", "RESET", "QUIT", "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH", "READONLY", "READWRITE", "ASKING",
+        "CLIENT LIST", "CLIENT INFO", "CLIENT GETNAME", "CLIENT ID", "CLIENT SETNAME", "CLIENT SETINFO", "CLIENT REPLY", "CLIENT TRACKING",
+        "SLOWLOG GET", "SLOWLOG LEN", "CONFIG GET", "MEMORY USAGE", "MEMORY STATS", "MEMORY DOCTOR",
+        "LATENCY LATEST", "LATENCY DOCTOR", "LATENCY HISTORY",
+        "CLUSTER INFO", "CLUSTER NODES", "CLUSTER SLOTS", "CLUSTER SHARDS", "CLUSTER KEYSLOT", "CLUSTER COUNTKEYSINSLOT",
+        "CLUSTER GETKEYSINSLOT", "CLUSTER MYID", "CLUSTER REPLICAS",
+        "COMMAND", "COMMAND COUNT", "COMMAND INFO", "COMMAND DOCS", "COMMAND LIST", "COMMAND GETKEYS",
+        "MODULE LIST", "ACL WHOAMI", "ACL CAT", "FUNCTION LIST", "FUNCTION STATS",
+        "PUBSUB CHANNELS", "PUBSUB NUMSUB", "PUBSUB NUMPAT", "PUBSUB SHARDCHANNELS", "PUBSUB SHARDNUMSUB",
+        "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "UNSUBSCRIBE", "PUNSUBSCRIBE", "SUNSUBSCRIBE", "MONITOR",
+        "OBJECT ENCODING", "OBJECT FREQ", "OBJECT IDLETIME", "OBJECT REFCOUNT", "OBJECT HELP",
+        "XINFO STREAM", "XINFO GROUPS", "XINFO CONSUMERS",
+        "SENTINEL GET-MASTER-ADDR-BY-NAME", "SENTINEL MASTERS", "SENTINEL MASTER", "SENTINEL REPLICAS", "SENTINEL SLAVES", "SENTINEL SENTINELS",
+    ]
+
+    /// Read-only mode is an allowlist (design D14): only commands flagged read-only, or known harmless
+    /// connection/introspection commands, are sent. Unknown commands are refused.
     public func enforceReadOnly(_ commands: [RedisCommand]) throws {
         guard isReadOnly else { return }
+        let reason = deployment == .replica ? "this connection is to a replica" : "this connection is read-only"
         for command in commands {
+            if Self.readOnlyAllowedCommands.contains(command.qualifiedName) { continue }
             guard let spec = spec(for: command) else {
-                throw RedisError(.readOnly, "\(command.name) is not a known read command; read-only mode only sends commands it knows are safe.")
+                throw RedisError(.readOnly, "\(command.qualifiedName) is not a known read command; read-only mode only sends commands it knows are safe.")
             }
-            if spec.isWrite || (spec.flags.contains(.dangerous) && !spec.flags.contains(.readonly)) {
-                let reason = deployment == .replica ? "this connection is to a replica" : "this connection is read-only"
+            guard spec.flags.contains(.readonly), !spec.isWrite, !spec.flags.contains(.dangerous) else {
                 throw RedisError(.readOnly, "\(spec.name) was not sent: \(reason).")
             }
         }

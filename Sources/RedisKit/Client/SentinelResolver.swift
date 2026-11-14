@@ -43,7 +43,7 @@ struct SentinelResolver: Sendable {
             guard let fields = reply.array, fields.count >= 2, let host = fields[0].string, let port = fields[1].int.flatMap({ Int(exactly: $0) }) else {
                 return nil
             }
-            return Endpoint(host: host, port: port)
+            return Endpoint.announced(host: host, port: port)
         }
         return (endpoint, sentinel)
     }
@@ -58,9 +58,10 @@ struct SentinelResolver: Sendable {
             }
             guard let entries = reply.array else { return nil }
             return entries.compactMap { entry in
-                guard let host = entry["ip"]?.string, let port = entry["port"]?.int.flatMap({ Int(exactly: $0) }) else { return nil }
+                guard let host = entry["ip"]?.string, let port = entry["port"]?.int.flatMap({ Int(exactly: $0) }),
+                      let endpoint = Endpoint.announced(host: host, port: port) else { return nil }
                 let flags = (entry["flags"]?.string ?? "").split(separator: ",").map(String.init)
-                return SentinelReplica(endpoint: Endpoint(host: host, port: port), flags: flags)
+                return SentinelReplica(endpoint: endpoint, flags: flags)
             }
         }
         return list

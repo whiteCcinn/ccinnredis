@@ -97,6 +97,11 @@ public enum MCPSchema {
                 }
             }
             guard matches else { return "Argument '\(name)' must be of type \(types.joined(separator: " or "))" }
+            if types.contains("integer"), value != .null {
+                guard let number = value.int else { return "Argument '\(name)' is not a representable integer" }
+                if let minimum = property["minimum"]?.int, number < minimum { return "Argument '\(name)' must be at least \(minimum)" }
+                if let maximum = property["maximum"]?.int, number > maximum { return "Argument '\(name)' must be at most \(maximum)" }
+            }
             if let items = value.array {
                 if let max = property["maxItems"]?.int, items.count > max { return "Argument '\(name)' accepts at most \(max) items" }
                 if property["items"]?["type"]?.string == "string", items.contains(where: { $0.string == nil }) {

@@ -48,8 +48,14 @@ extension CommandSpec {
         guard let fields = entry.array, fields.count >= 6, let name = fields[0].string,
               let arity = fields[1].int.flatMap({ Int(exactly: $0) }) else { return nil }
         let words = Set((fields[2].array ?? []).compactMap { $0.string?.lowercased() })
+        let categories = fields.count > 6 ? Set((fields[6].array ?? []).compactMap { $0.string?.lowercased() }) : []
+        // Blank or whitespace names would break lookups and completion.
+        let normalized = name.replacingOccurrences(of: "|", with: " ").trimmingCharacters(in: .whitespaces)
+        guard !normalized.isEmpty, !normalized.split(separator: " ").isEmpty,
+              normalized.split(separator: " ").count <= 2, !normalized.contains("  ") else { return nil }
         var flags: Flags = []
-        if words.contains("write") { flags.insert(.write) }
+        if words.contains("write") || categories.contains("@write") { flags.insert(.write) }
+        if categories.contains("@dangerous") { flags.insert(.dangerous) }
         if words.contains("readonly") { flags.insert(.readonly) }
         if words.contains("admin") { flags.insert(.admin) }
         if words.contains("pubsub") { flags.insert(.pubsub) }
@@ -58,7 +64,7 @@ extension CommandSpec {
         let last = fields[4].int.flatMap { Int(exactly: $0) } ?? 0
         let step = fields[5].int.flatMap { Int(exactly: $0) } ?? 0
         let keys: KeyRule = first > 0 ? .range(first: first, last: last, step: step) : .none
-        return CommandSpec(name: name.uppercased().replacingOccurrences(of: "|", with: " "), arity: arity, flags: flags, keys: keys,
+        return CommandSpec(name: normalized.uppercased(), arity: arity, flags: flags, keys: keys,
                            since: ServerVersion(1, 0, 0), group: words.contains("module") ? "module" : "server")
     }
 

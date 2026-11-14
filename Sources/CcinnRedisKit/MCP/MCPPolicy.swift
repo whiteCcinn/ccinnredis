@@ -68,7 +68,7 @@ public enum MCPCommandPolicy {
             let hint = name == "KEYS" ? " Use the scan_keys tool instead." : ""
             return .denied("\(name) is not allowed over MCP (stateful, blocking, unbounded or modifying).\(hint)")
         }
-        if allowedAdmin.contains(qualified) { return .allowed }
+        if allowedAdmin.contains(qualified) { return BoundedReads.problem(command).map(Verdict.denied) ?? .allowed }
         guard let spec else {
             return .denied("\(qualified) is not a known read-only command; MCP only runs commands it can classify as reads.")
         }
@@ -85,21 +85,144 @@ public enum MCPCommandPolicy {
         guard spec.flags.contains(.readonly) else {
             return .denied("\(spec.name) is not flagged read-only.")
         }
+        if let problem = BoundedReads.problem(command) { return .denied(problem) }
         return .allowed
     }
 
-    /// Hides secret configuration values (`requirepass`, `masterauth`, TLS key passwords…) in CONFIG GET replies.
+    /// Hides secrets in replies: CONFIG GET values (`requirepass`, `masterauth`, TLS key passwords…) and
+    /// the logged arguments of SLOWLOG GET entries (AUTH, CONFIG SET …pass, ACL SETUSER, SENTINEL SET auth-pass…).
     public static func redact(_ reply: RESPValue, for command: RedisCommand) -> RESPValue {
-        guard command.qualifiedName == "CONFIG GET", let pairs = reply.pairs else { return reply }
-        let redacted = pairs.map { pair -> RESPPair in
-            let name = (pair.key.string ?? "").lowercased()
-            if name.contains("pass") || name.contains("auth") || name.contains("secret") || name.contains("key-file") {
-                return RESPPair(pair.key, .bulkString(Array("<redacted>".utf8)))
+        switch command.qualifiedName {
+        case "CONFIG GET":
+            guard let pairs = reply.pairs else { return reply }
+            let redacted = pairs.map { pair -> RESPPair in
+                SecretConfig.isSecret(pair.key.string ?? "") ? RESPPair(pair.key, .bulkString(Array("<redacted>".utf8))) : pair
             }
-            return pair
+            if case .map = reply { return .map(redacted) }
+            return .array(redacted.flatMap { [$0.key, $0.value] })
+        case "SLOWLOG GET":
+            guard case let .array(entries) = reply else { return reply }
+            return .array(entries.map { entry in
+                guard case var .array(fields) = entry, fields.count > 3, let arguments = fields[3].array else { return entry }
+                let raw = arguments.map { $0.bytes ?? Array(($0.text ?? "").utf8) }
+                fields[3] = .array(ConsoleHistory.redact(arguments: raw).map(RESPValue.bulkString))
+                return .array(fields)
+            })
+        default:
+            return reply
         }
-        if case .map = reply { return .map(redacted) }
-        return .array(redacted.flatMap { [$0.key, $0.value] })
+    }
+}
+
+/// Reads must be bounded: whole-collection replies are refused and ranges/counts are capped (design §3),
+/// so one tool call can never make the server serialise millions of elements.
+enum BoundedReads {
+    static let maxCount: Int64 = Int64(MCPLimits.maximumItems)
+
+    static let wholeCollection: Set<String> = [
+        "HGETALL", "HKEYS", "HVALS", "SMEMBERS", "SUNION", "SINTER", "SDIFF", "ZUNION", "ZINTER", "ZDIFF",
+    ]
+
+    static func problem(_ command: RedisCommand) -> String? {
+        let words = command.arguments.map { String(decoding: $0, as: UTF8.self) }
+        let name = command.name
+        if wholeCollection.contains(name) {
+            return "\(name) returns the whole collection. Use get_key (paged), or HSCAN/SSCAN/ZSCAN with COUNT ≤ \(maxCount)."
+        }
+        switch name {
+        case "SCAN": return scanCount(words, optionsFrom: 2)
+        case "HSCAN", "SSCAN", "ZSCAN": return scanCount(words, optionsFrom: 3)
+        case "LRANGE", "ZREVRANGE": return indexSpan(words, name: name)
+        case "ZRANGE":
+            let options = Set(words.dropFirst(4).map { $0.uppercased() })
+            if options.contains("BYSCORE") || options.contains("BYLEX") { return limitCount(words, optionsFrom: 4, name: name) }
+            return indexSpan(words, name: name)
+        case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "SORT_RO":
+            return limitCount(words, optionsFrom: name == "SORT_RO" ? 2 : 4, name: name)
+        case "XRANGE", "XREVRANGE":
+            return requiredCount(option(words, "COUNT", from: 4), name: name, option: "COUNT")
+        case "XREAD":
+            let end = words.firstIndex { $0.uppercased() == "STREAMS" } ?? words.count
+            return requiredCount(option(Array(words.prefix(end)), "COUNT", from: 1), name: name, option: "COUNT")
+        case "GEOSEARCH", "GEORADIUS_RO", "GEORADIUSBYMEMBER_RO":
+            return requiredCount(option(words, "COUNT", from: 2), name: name, option: "COUNT")
+        case "SRANDMEMBER", "HRANDFIELD", "ZRANDMEMBER":
+            guard words.count > 2 else { return nil }
+            guard let count = Int64(words[2]), count >= -maxCount, count <= maxCount else {
+                return "\(name) count must be between -\(maxCount) and \(maxCount)."
+            }
+            return nil
+        case "LPOS":
+            guard let count = option(words, "COUNT", from: 3) else { return nil }
+            return (1...maxCount).contains(count ?? 0) ? nil : "LPOS COUNT must be between 1 and \(maxCount) (0 returns every match)."
+        case "XINFO":
+            guard words.count > 1, words[1].uppercased() == "STREAM", words.dropFirst(3).contains(where: { $0.uppercased() == "FULL" }) else { return nil }
+            guard let count = option(words, "COUNT", from: 3) else { return nil } // FULL defaults to 10 entries
+            return (1...maxCount).contains(count ?? 0) ? nil : "XINFO STREAM FULL COUNT must be between 1 and \(maxCount) (0 means all)."
+        case "XPENDING":
+            guard words.count > 3 else { return nil } // summary form
+            let countIndex = words[3].uppercased() == "IDLE" ? 7 : 5
+            guard countIndex < words.count, let count = Int64(words[countIndex]), (1...maxCount).contains(count) else {
+                return "XPENDING count must be between 1 and \(maxCount)."
+            }
+            return nil
+        case "MEMORY":
+            guard command.qualifiedName == "MEMORY USAGE", let samples = option(words, "SAMPLES", from: 3) else { return nil }
+            return (1...maxCount).contains(samples ?? 0) ? nil : "MEMORY USAGE SAMPLES must be between 1 and \(maxCount) (0 walks every element)."
+        default:
+            return nil
+        }
+    }
+
+    /// The integer after `name` (case-insensitive), searching option positions from `start`.
+    /// `nil` when the option is absent, `.some(nil)` when its value is missing or not an integer.
+    private static func option(_ words: [String], _ name: String, from start: Int) -> Int64?? {
+        var index = start
+        while index < words.count {
+            if words[index].uppercased() == name {
+                return index + 1 < words.count ? .some(Int64(words[index + 1])) : .some(nil)
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    private static func scanCount(_ words: [String], optionsFrom start: Int) -> String? {
+        guard let count = option(words, "COUNT", from: start) else { return nil }
+        return (1...maxCount).contains(count ?? 0) ? nil : "SCAN COUNT must be between 1 and \(maxCount)."
+    }
+
+    private static func requiredCount(_ count: Int64??, name: String, option: String) -> String? {
+        guard let count, let value = count, (1...maxCount).contains(value) else {
+            return "\(name) needs \(option) between 1 and \(maxCount) over MCP."
+        }
+        return nil
+    }
+
+    private static func limitCount(_ words: [String], optionsFrom start: Int, name: String) -> String? {
+        var index = start
+        while index < words.count {
+            if words[index].uppercased() == "LIMIT", index + 2 < words.count, let count = Int64(words[index + 2]), (1...maxCount).contains(count) {
+                return nil
+            }
+            index += 1
+        }
+        return "\(name) needs LIMIT <offset> <count> with count between 1 and \(maxCount) over MCP."
+    }
+
+    /// Index ranges must have the same sign and span at most `maxCount` elements (0 -1 means everything).
+    private static func indexSpan(_ words: [String], name: String) -> String? {
+        guard words.count >= 4, let start = Int64(words[2]), let stop = Int64(words[3]) else {
+            return "\(name) needs integer start and stop indexes."
+        }
+        guard (start >= 0) == (stop >= 0) else {
+            return "\(name) \(start) \(stop) may return the whole collection; use non-negative (or both negative) indexes spanning at most \(maxCount) elements."
+        }
+        let (span, overflow) = stop.subtractingReportingOverflow(start)
+        guard !overflow, span < maxCount else {
+            return "\(name) may return at most \(maxCount) elements over MCP; narrow the range."
+        }
+        return nil
     }
 }
 

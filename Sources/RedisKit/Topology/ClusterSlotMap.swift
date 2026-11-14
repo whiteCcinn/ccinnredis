@@ -23,6 +23,12 @@ public struct ClusterShard: Sendable, Hashable {
     public var ranges: [ClosedRange<Int>]
 
     public var slotCount: Int { ranges.reduce(0) { $0 + $1.count } }
+
+    public init(master: ClusterNodeAddress, replicas: [ClusterNodeAddress], ranges: [ClosedRange<Int>]) {
+        self.master = master
+        self.replicas = replicas
+        self.ranges = ClusterSlotMap.merged(ranges)
+    }
 }
 
 /// Slot → owning shard (design D7).
@@ -108,10 +114,10 @@ public struct ClusterSlotMap: Sendable {
         var shards: [ClusterShard] = []
         for entry in entries {
             guard let fields = entry.array, fields.count >= 3,
-                  let start = fields[0].int.flatMap({ Int(exactly: $0) }), let end = fields[1].int.flatMap({ Int(exactly: $0) }),
-                  start <= end, let master = Self.slotsNode(fields[2], queriedNode: queriedNode) else { continue }
+                  let start = fields[0].int, let end = fields[1].int, let range = Self.slotRange(start, end),
+                  let master = Self.slotsNode(fields[2], queriedNode: queriedNode) else { continue }
             let replicas = fields.dropFirst(3).compactMap { Self.slotsNode($0, queriedNode: queriedNode) }
-            shards.append(ClusterShard(master: master, replicas: replicas, ranges: [start...end]))
+            shards.append(ClusterShard(master: master, replicas: replicas, ranges: [range]))
         }
         self.init(shards: shards)
     }
@@ -121,10 +127,11 @@ public struct ClusterSlotMap: Sendable {
         let rawHost = fields[0].string ?? ""
         guard rawHost != "?" else { return nil }
         let host = rawHost.isEmpty ? queriedNode.host : rawHost
+        guard let endpoint = Endpoint.announced(host: host, port: port) else { return nil }
         let id = fields.count > 2 ? fields[2].string : nil
         var hostname: String?
         if fields.count > 3 { hostname = fields[3]["hostname"]?.string }
-        return ClusterNodeAddress(id: id, endpoint: Endpoint(host: host, port: port), hostname: hostname)
+        return ClusterNodeAddress(id: id, endpoint: endpoint, hostname: hostname)
     }
 
     /// `CLUSTER SHARDS` (7.0+), RESP2 flat arrays or RESP3 maps.
@@ -132,11 +139,11 @@ public struct ClusterSlotMap: Sendable {
         guard let entries = reply.array else { throw RedisError(.protocolViolation, "Unexpected CLUSTER SHARDS reply") }
         var shards: [ClusterShard] = []
         for entry in entries {
-            let slots = (entry["slots"]?.array ?? []).compactMap { $0.int.flatMap { Int(exactly: $0) } }
+            let slots = (entry["slots"]?.array ?? []).compactMap(\.int)
             var ranges: [ClosedRange<Int>] = []
             var index = 0
             while index + 1 < slots.count {
-                if slots[index] <= slots[index + 1] { ranges.append(slots[index]...slots[index + 1]) }
+                if let range = Self.slotRange(slots[index], slots[index + 1]) { ranges.append(range) }
                 index += 2
             }
             var master: ClusterNodeAddress?
@@ -162,8 +169,32 @@ public struct ClusterSlotMap: Sendable {
         var host = node["endpoint"]?.string ?? ""
         if host.isEmpty || host == "?" { host = node["ip"]?.string ?? "" }
         if host.isEmpty || host == "?" { host = queriedNode.host }
-        return ClusterNodeAddress(id: node["id"]?.string, endpoint: Endpoint(host: host, port: port),
-                                  hostname: node["hostname"]?.string, health: node["health"]?.string)
+        guard let endpoint = Endpoint.announced(host: host, port: port) else { return nil }
+        return ClusterNodeAddress(id: node["id"]?.string, endpoint: endpoint, hostname: node["hostname"]?.string, health: node["health"]?.string)
+    }
+
+    /// Sorted, non-overlapping ranges, so slot counts never exceed 16384 even for hostile replies.
+    static func merged(_ ranges: [ClosedRange<Int>]) -> [ClosedRange<Int>] {
+        guard ranges.count > 1 else { return ranges }
+        var result: [ClosedRange<Int>] = []
+        result.reserveCapacity(ranges.count)
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = result.last, range.lowerBound <= last.upperBound + 1 {
+                result[result.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
+            } else {
+                result.append(range)
+            }
+        }
+        return result
+    }
+
+    /// Slot range clamped to 0...16383, or nil when empty/out of range (never trusts server numbers).
+    static func slotRange(_ start: Int64, _ end: Int64) -> ClosedRange<Int>? {
+        let maxSlot = Int64(HashSlot.count - 1)
+        let lower = max(0, start)
+        let upper = min(maxSlot, end)
+        guard lower <= upper, lower <= maxSlot else { return nil }
+        return Int(lower)...Int(upper)
     }
 
     /// From parsed `CLUSTER NODES` lines (works on every cluster version).
@@ -238,7 +269,7 @@ public struct ClusterNodeInfo: Sendable, Hashable, Identifiable {
             var host = String(addressField[..<colon])
             if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
             if host.isEmpty { host = queriedNode.host }
-            endpoint = Endpoint(host: host, port: port)
+            endpoint = Endpoint.announced(host: host, port: port)
         }
 
         let role: Role = flags.contains("master") ? .master : (flags.contains("slave") || flags.contains("replica")) ? .replica : .unknown
@@ -249,21 +280,21 @@ public struct ClusterNodeInfo: Sendable, Hashable, Identifiable {
             if token.hasPrefix("[") {
                 // [slot->-id] migrating, [slot-<-id] importing
                 let body = token.dropFirst().prefix { $0.isNumber }
-                guard let slot = Int(body) else { continue }
+                guard let slot = Int(body), (0..<HashSlot.count).contains(slot) else { continue }
                 if token.contains("->-") { migrating.append(slot) } else if token.contains("-<-") { importing.append(slot) }
                 continue
             }
-            let bounds = token.split(separator: "-", maxSplits: 1).compactMap { Int($0) }
-            if bounds.count == 2, bounds[0] <= bounds[1] {
-                ranges.append(bounds[0]...bounds[1])
-            } else if bounds.count == 1, !token.contains("-") {
-                ranges.append(bounds[0]...bounds[0])
+            let bounds = token.split(separator: "-", maxSplits: 1).compactMap { Int64($0) }
+            if bounds.count == 2, let range = ClusterSlotMap.slotRange(bounds[0], bounds[1]) {
+                ranges.append(range)
+            } else if bounds.count == 1, !token.contains("-"), let range = ClusterSlotMap.slotRange(bounds[0], bounds[0]) {
+                ranges.append(range)
             }
         }
         return ClusterNodeInfo(id: fields[0], endpoint: endpoint, busPort: busPort, hostname: hostname, flags: flags, role: role,
                                masterID: fields[3] == "-" ? nil : fields[3], pingSent: Int64(fields[4]) ?? 0,
                                pongReceived: Int64(fields[5]) ?? 0, configEpoch: Int64(fields[6]) ?? 0, linkState: fields[7],
-                               slotRanges: ranges, migratingSlots: migrating, importingSlots: importing)
+                               slotRanges: ClusterSlotMap.merged(ranges), migratingSlots: migrating, importingSlots: importing)
     }
 }
 
@@ -277,13 +308,14 @@ public enum Redirect: Sendable, Equatable {
         guard parts.count >= 3, let slot = Int(parts[1]), (0..<HashSlot.count).contains(slot) else { return nil }
         let address = String(parts[2])
         let endpoint: Endpoint
-        if address.hasPrefix(":"), let port = Int(address.dropFirst()), let fallbackHost {
-            endpoint = Endpoint(host: fallbackHost, port: port)
+        if address.hasPrefix(":"), let port = Int(address.dropFirst()), let fallbackHost,
+           let fallback = Endpoint.announced(host: fallbackHost, port: port) {
+            endpoint = fallback
         } else if let colon = address.lastIndex(of: ":"), let port = Int(address[address.index(after: colon)...]), port > 0 {
             var host = String(address[..<colon])
             if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
-            guard !host.isEmpty else { return nil }
-            endpoint = Endpoint(host: host, port: port)
+            guard let announced = Endpoint.announced(host: host, port: port) else { return nil }
+            endpoint = announced
         } else {
             return nil
         }

@@ -345,8 +345,8 @@ public enum CommandSpecs {
     CLIENT SETINFO|4|s|-|7.2.0|connection
     CLIENT SETNAME|3|s|-|2.6.9|connection
     CLIENT TRACKING|-3|s|-|6.0.0|connection
-    CLIENT UNBLOCK|-3|a|-|5.0.0|connection
-    CLIENT UNPAUSE|2|a|-|6.2.0|connection
+    CLIENT UNBLOCK|-3|ad|-|5.0.0|connection
+    CLIENT UNPAUSE|2|ad|-|6.2.0|connection
     ECHO|2|r|-|1.0.0|connection
     HELLO|-1|s|-|6.0.0|connection
     PING|-1|r|-|1.0.0|connection
@@ -372,7 +372,7 @@ public enum CommandSpecs {
     FUNCTION STATS|2|r|-|7.0.0|scripting
     SCRIPT EXISTS|-3|r|-|2.6.0|scripting
     SCRIPT FLUSH|-2|wd|-|2.6.0|scripting
-    SCRIPT KILL|2|a|-|2.6.0|scripting
+    SCRIPT KILL|2|ad|-|2.6.0|scripting
     SCRIPT LOAD|3|r|-|2.6.0|scripting
     PSUBSCRIBE|-2|psm|-|2.0.0|pubsub
     PUBLISH|3|p|-|2.0.0|pubsub
@@ -395,8 +395,8 @@ public enum CommandSpecs {
     ACL SETUSER|-3|ad|-|6.0.0|server
     ACL USERS|2|a|-|6.0.0|server
     ACL WHOAMI|2|r|-|6.0.0|server
-    BGREWRITEAOF|1|a|-|1.0.0|server
-    BGSAVE|-1|a|-|1.0.0|server
+    BGREWRITEAOF|1|ad|-|1.0.0|server
+    BGSAVE|-1|ad|-|1.0.0|server
     COMMAND COUNT|2|r|-|2.8.13|server
     COMMAND DOCS|-2|r|-|7.0.0|server
     COMMAND GETKEYS|-3|r|-|2.8.13|server
@@ -404,7 +404,7 @@ public enum CommandSpecs {
     COMMAND LIST|-2|r|-|7.0.0|server
     COMMAND|-1|r|-|2.8.13|server
     CONFIG GET|-3|a|-|2.0.0|server
-    CONFIG RESETSTAT|2|a|-|2.0.0|server
+    CONFIG RESETSTAT|2|ad|-|2.0.0|server
     CONFIG REWRITE|2|ad|-|2.8.0|server
     CONFIG SET|-4|ad|-|2.0.0|server
     DBSIZE|1|rf|-|1.0.0|server
@@ -417,7 +417,7 @@ public enum CommandSpecs {
     LATENCY DOCTOR|2|a|-|2.8.13|server
     LATENCY HISTORY|3|a|-|2.8.13|server
     LATENCY LATEST|2|a|-|2.8.13|server
-    LATENCY RESET|-2|a|-|2.8.13|server
+    LATENCY RESET|-2|ad|-|2.8.13|server
     LOLWUT|-1|r|-|5.0.0|server
     MEMORY DOCTOR|2|r|-|4.0.0|server
     MEMORY STATS|2|r|-|4.0.0|server
@@ -428,7 +428,7 @@ public enum CommandSpecs {
     MONITOR|1|am|-|1.0.0|server
     REPLICAOF|3|ad|-|5.0.0|server
     ROLE|1|r|-|2.8.12|server
-    SAVE|1|a|-|1.0.0|server
+    SAVE|1|ad|-|1.0.0|server
     SHUTDOWN|-1|ad|-|1.0.0|server
     SLAVEOF|3|ad|-|1.0.0|server
     SLOWLOG GET|-2|a|-|2.2.12|server
@@ -436,6 +436,24 @@ public enum CommandSpecs {
     SLOWLOG RESET|2|ad|-|2.2.12|server
     SWAPDB|3|wd|-|4.0.0|server
     TIME|1|r|-|2.6.0|server
+    CLUSTER ADDSLOTS|-3|ad|-|3.0.0|cluster
+    CLUSTER ADDSLOTSRANGE|-4|ad|-|7.0.0|cluster
+    CLUSTER BUMPEPOCH|2|ad|-|3.0.0|cluster
+    CLUSTER DELSLOTS|-3|ad|-|3.0.0|cluster
+    CLUSTER DELSLOTSRANGE|-4|ad|-|7.0.0|cluster
+    CLUSTER FLUSHSLOTS|2|ad|-|3.0.0|cluster
+    CLUSTER MEET|-4|ad|-|3.0.0|cluster
+    CLUSTER REPLICATE|3|ad|-|3.0.0|cluster
+    CLUSTER SET-CONFIG-EPOCH|3|ad|-|3.0.0|cluster
+    CLUSTER SETSLOT|-4|ad|-|3.0.0|cluster
+    ACL LOAD|2|ad|-|6.0.0|server
+    ACL SAVE|2|ad|-|6.0.0|server
+    MODULE LOADEX|-3|ad|-|7.0.0|server
+    PSYNC|-3|ad|-|2.8.0|server
+    SYNC|1|ad|-|1.0.0|server
+    FUNCTION KILL|2|ad|-|7.0.0|scripting
+    FUNCTION RESTORE|-3|wd|-|7.0.0|scripting
+    MEMORY PURGE|2|ad|-|4.0.0|server
     CLUSTER COUNTKEYSINSLOT|3|r|-|3.0.0|cluster
     CLUSTER FAILOVER|-2|ad|-|3.0.0|cluster
     CLUSTER FORGET|3|ad|-|3.0.0|cluster

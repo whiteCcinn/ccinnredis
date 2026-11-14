@@ -22,15 +22,18 @@ public struct CommandCatalog: Sendable {
         self.serverVersion = serverVersion
         self.family = family
         var specs = CommandSpecs.table
-        for spec in extra where specs[spec.name] == nil { specs[spec.name] = spec }
+        for spec in extra where specs[spec.name] == nil && !spec.name.trimmingCharacters(in: .whitespaces).isEmpty {
+            specs[spec.name] = spec
+        }
         let available = specs.filter { Self.isAvailable($0.value, version: serverVersion, family: family) }
         self.specs = available
         var names = Set<String>()
         var subcommands: [String: Set<String>] = [:]
         for name in available.keys {
             let parts = name.split(separator: " ", maxSplits: 1)
-            names.insert(String(parts[0]))
-            if parts.count == 2 { subcommands[String(parts[0]), default: []].insert(String(parts[1])) }
+            guard let container = parts.first else { continue }
+            names.insert(String(container))
+            if parts.count == 2 { subcommands[String(container), default: []].insert(String(parts[1])) }
         }
         commandNames = names.sorted()
         subcommandsByContainer = subcommands.mapValues { $0.sorted() }

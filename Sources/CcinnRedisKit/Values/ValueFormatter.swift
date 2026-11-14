@@ -67,13 +67,20 @@ public enum ValueFormatter {
         return lines.joined(separator: "\n")
     }
 
+    /// True when stored JSON has no line breaks, so an edit shown pretty-printed is saved compact again.
+    public static func isCompactJSON(_ bytes: [UInt8]) -> Bool {
+        !bytes.contains(0x0A) && !bytes.contains(0x0D)
+    }
+
     /// Bytes to store for edited text in a format.
-    public static func parse(_ text: String, as format: ValueFormat) throws -> [UInt8] {
+    /// - Parameter compactJSON: minify JSON before storing (the original value was compact).
+    public static func parse(_ text: String, as format: ValueFormat, compactJSON: Bool = false) throws -> [UInt8] {
         switch format {
         case .text:
             return Array(text.utf8)
         case .json:
             guard JSONPrettyPrinter.format(text) != nil else { throw ValueFormatError(message: "The text is not valid JSON") }
+            if compactJSON, let minified = JSONPrettyPrinter.minify(text) { return Array(minified.utf8) }
             return Array(text.utf8)
         case .hex:
             var result: [UInt8] = []
@@ -81,7 +88,11 @@ public enum ValueFormatter {
                 var line = Substring(rawLine)
                 if let bar = line.firstIndex(of: "|") { line = line[..<bar] } // drop the ASCII column
                 var tokens = line.split(whereSeparator: \.isWhitespace)
-                if let first = tokens.first, first.count == 8, tokens.count > 1, first.allSatisfy(\.isHexDigit) { tokens.removeFirst() } // offset
+                // A leading offset only in hexdump-style lines: "00000010  48 65 …" (8 hex digits, then byte pairs).
+                if let first = tokens.first, first.count == 8, tokens.count > 1, first.allSatisfy(\.isHexDigit),
+                   tokens.dropFirst().allSatisfy({ $0.count == 2 }) {
+                    tokens.removeFirst()
+                }
                 for token in tokens {
                     let characters = Array(token)
                     guard characters.count % 2 == 0 else { throw ValueFormatError(message: "'\(token)' is not a sequence of hex byte pairs") }
