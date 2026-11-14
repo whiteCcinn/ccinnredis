@@ -86,7 +86,7 @@ final class FakeConnection: ByteTransport, @unchecked Sendable {
 
     let index: Int
     let endpoint: Endpoint
-    private unowned let backend: FakeRedisBackend
+    private let backend: FakeRedisBackend // test-only retain cycle
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
 
     init(index: Int, endpoint: Endpoint, backend: FakeRedisBackend) {
