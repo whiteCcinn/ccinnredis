@@ -27,9 +27,14 @@ struct CcinnRedisApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Behave like a regular app when launched from `swift run` (no bundle).
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        if LaunchArguments.value("--snapshot") != nil {
+            // Automated captures render in the background without a Dock icon or stealing focus.
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            // Behave like a regular app when launched from `swift run` (no bundle).
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         NSWindow.allowsAutomaticWindowTabbing = false
         if let scheme = LaunchArguments.appearanceOverride {
             NSApp.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
