@@ -1,0 +1,22 @@
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Build outputs
+/dist/
+/build/
+
+# Worktrees and local tooling
+.claude/worktrees/
+.worktrees/
+
+# macOS
+.DS_Store
+
+# Local development workflow files (not part of the product)
+openspec/
+.agents/
+.claude/
