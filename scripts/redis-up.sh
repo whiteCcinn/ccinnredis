@@ -8,7 +8,8 @@
 # at 128 MB (redis-stack 256 MB; override with CCINNREDIS_IT_MEMORY), and run scripts/redis-down.sh when idle.
 #
 # Containers are named ccinnredis-it-* and bound to 127.0.0.1 ports 17000–17999 only.
-# Run the integration tests afterwards with:  CCINNREDIS_IT=1 swift test --filter IntegrationTests
+# Run the integration tests of the started groups afterwards with:
+#   CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=<groups,comma,separated> swift test --filter IntegrationTests
 #
 # Ports
 #   17028 Redis 2.8      17032 Redis 3.2      17040 Redis 4.0      17050 Redis 5.0 (requirepass)
@@ -235,5 +236,6 @@ if wants large; then
   "$SEED" large ccinnredis-it-72 6379
 fi
 
-log "ready. Run: CCINNREDIS_IT=1 swift test --filter IntegrationTests"
+GROUP_LIST="$(IFS=,; echo "${GROUPS_REQUESTED[*]}")"
+log "ready. Run: CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=$GROUP_LIST swift test --filter IntegrationTests"
 echo "export CCINNREDIS_IT=1"

@@ -183,15 +183,19 @@ scripts/package-release.sh 1.0.0     # 在 dist/ 中生成通用 .app、.zip、.
 需要 Docker。`scripts/redis-up.sh` 会按分组启动名为 `ccinnredis-it-*`、绑定在 `127.0.0.1:17000-17999` 且限制内存的容器 —— 请每次只启动少量分组：
 
 ```bash
-scripts/redis-up.sh legacy modern auth   # Redis 2.8/3.2/4.0、7.4/8.2/Valkey 8、5.0（requirepass）+ 6.2（ACL）
-scripts/redis-up.sh large tls stack      # 含 20 万键的 Redis 7.2、TLS、redis-stack
+swift build                                   # MCP 测试会启动构建出的可执行文件
+scripts/redis-up.sh legacy modern             # Redis 2.8/3.2/4.0、7.4/8.2/Valkey 8
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=legacy,modern swift test --filter IntegrationTests
+scripts/redis-down.sh
+scripts/redis-up.sh auth large tls stack      # 5.0（requirepass）+ 6.2（ACL）、含 20 万键的 Redis 7.2、TLS、redis-stack
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=auth,large,tls,stack swift test --filter IntegrationTests
+scripts/redis-down.sh
 scripts/redis-up.sh cluster sentinel proxy
-swift build                              # MCP 测试会启动构建出的可执行文件
-CCINNREDIS_IT=1 swift test --filter IntegrationTests
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=cluster,sentinel,proxy swift test --filter IntegrationTests
 scripts/redis-down.sh
 ```
 
-未启动的服务器对应的测试会因连接失败而失败，因此请只运行与已启动分组对应的测试套件（例如 `--filter "Integration: cluster"`）。
+`CCINNREDIS_IT_GROUPS` 用于选择已启动的分组（不设置表示全部分组）。已选分组的服务器若未运行，对应测试会失败，绝不会被静默跳过。
 
 MCP 集成测试会以子进程方式启动 `CcinnRedis mcp`。它使用两个 **仅供测试** 的环境变量，正常使用时不应设置：`CCINNREDIS_PROFILE_DIR=<路径>` 从其他目录读取连接配置（审计日志也写到那里），`CCINNREDIS_TEST_INSECURE_SECRETS_FILE=<json>` 从 JSON 文件而不是钥匙串读取密码。
 

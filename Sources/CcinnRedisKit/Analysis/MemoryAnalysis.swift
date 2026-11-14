@@ -187,14 +187,17 @@ public enum MemoryEstimator {
     public static func estimate(type: KeyType, length: Int64?) -> Int64 {
         guard type.exists else { return 0 }
         let length = max(0, length ?? 0)
-        let overhead: Int64 = 56
+        let perElement: Int64
         switch type {
-        case .string: return overhead + length
-        case .list, .set: return overhead + length.multipliedReportingOverflow(by: 24).partialValue
-        case .hash, .zset: return overhead + length.multipliedReportingOverflow(by: 48).partialValue
-        case .stream: return overhead + length.multipliedReportingOverflow(by: 64).partialValue
-        default: return overhead + length
+        case .list, .set: perElement = 24
+        case .hash, .zset: perElement = 48
+        case .stream: perElement = 64
+        default: perElement = 1
         }
+        // Saturating arithmetic: lengths come from the server and may be absurd.
+        let (payload, productOverflow) = length.multipliedReportingOverflow(by: perElement)
+        let (total, sumOverflow) = Int64(56).addingReportingOverflow(payload)
+        return productOverflow || sumOverflow ? Int64.max : total
     }
 
     /// `serializedlength:N` from a `DEBUG OBJECT` reply.
@@ -335,7 +338,7 @@ public actor MemoryAnalyzer {
             }
             for index in keys.indices where types[index].exists {
                 let measured = sizes[index]
-                let bytes = measured ?? MemoryEstimator.estimate(type: types[index], length: lengths[index])
+                let bytes = max(0, measured ?? MemoryEstimator.estimate(type: types[index], length: lengths[index]))
                 aggregator.add(KeySample(key: keys[index], type: types[index], bytes: bytes, isEstimate: measured == nil || !useMemoryUsage,
                                          ttlMilliseconds: ttls[index], elements: lengths[index], node: batch.node))
             }

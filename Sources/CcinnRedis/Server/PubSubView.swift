@@ -13,7 +13,7 @@ final class PubSubModel {
         let payload: [UInt8]
     }
 
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var subscribeText = ""
     var publishChannel = ""
     var publishMessage = ""
@@ -25,96 +25,146 @@ final class PubSubModel {
     private(set) var revision = 0
     private var session: StreamingSession?
     private var listenTask: Task<Void, Never>?
+    /// Subscribe/unsubscribe/close run one after another, so a double click cannot open two sessions.
+    private var commandChain: Task<Void, Never>?
+    /// Bumped by close(): work started for an older session discards what it opened.
+    private var sessionGeneration = 0
     private var counter = 0
+    @ObservationIgnored private var pending: [Message] = []
+    @ObservationIgnored private var coalescer: UpdateCoalescer?
     static let maxMessages = 5000
 
     init(workspace: WorkspaceModel) {
         self.workspace = workspace
+        coalescer = UpdateCoalescer { [weak self] in self?.flushPending() }
         refreshChannels()
     }
 
     var unavailableReason: String? { workspace.capabilities.supports(.pubsub) ? nil : workspace.capabilities[.pubsub].reason }
+
+    private func enqueue(_ operation: @escaping @MainActor (PubSubModel) async -> Void) {
+        let previous = commandChain
+        commandChain = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await operation(self)
+        }
+    }
 
     func subscribe(pattern: Bool) {
         let names = subscribeText.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init).filter { !$0.isEmpty }
         guard !names.isEmpty else { return }
         subscribeText = ""
         let command = RedisCommand(pattern ? "PSUBSCRIBE" : "SUBSCRIBE", names.map { RedisArgument($0) })
-        Task {
+        let client = workspace.client
+        enqueue { model in
+            let generation = model.sessionGeneration
             do {
-                if let session {
+                if let session = model.session {
                     try await session.send([command])
                 } else {
-                    let session = try await StreamingSession.open(client: workspace.client, initial: [command])
-                    self.session = session
-                    listen(session)
+                    let session = try await StreamingSession.open(client: client, initial: [command])
+                    guard model.sessionGeneration == generation, model.session == nil else {
+                        await session.close() // closed (or replaced) while connecting
+                        return
+                    }
+                    model.session = session
+                    model.listen(session)
                 }
-                if pattern { patterns += names.filter { !patterns.contains($0) } } else { subscriptions += names.filter { !subscriptions.contains($0) } }
-                error = nil
+                if pattern {
+                    model.patterns += names.filter { !model.patterns.contains($0) }
+                } else {
+                    model.subscriptions += names.filter { !model.subscriptions.contains($0) }
+                }
+                model.error = nil
             } catch {
-                self.error = describe(error)
+                model.error = describe(error)
             }
         }
     }
 
     func unsubscribe(_ name: String, pattern: Bool) {
-        Task {
-            try? await session?.send([RedisCommand(pattern ? "PUNSUBSCRIBE" : "UNSUBSCRIBE", [RedisArgument(name)])])
-            if pattern { patterns.removeAll { $0 == name } } else { subscriptions.removeAll { $0 == name } }
-            if subscriptions.isEmpty, patterns.isEmpty { close() }
+        enqueue { model in
+            try? await model.session?.send([RedisCommand(pattern ? "PUNSUBSCRIBE" : "UNSUBSCRIBE", [RedisArgument(name)])])
+            if pattern { model.patterns.removeAll { $0 == name } } else { model.subscriptions.removeAll { $0 == name } }
+            if model.subscriptions.isEmpty, model.patterns.isEmpty { model.closeSession() }
         }
     }
 
     private func listen(_ session: StreamingSession) {
+        listenTask?.cancel()
         listenTask = Task { [weak self] in
             for await frame in session.frames {
                 guard let self else { return }
                 if case let .message(channel, payload, pattern) = PubSubEvent.parse(frame) {
-                    self.counter += 1
-                    self.messages.append(Message(id: self.counter, time: Date(), channel: RedisKey(bytes: channel).display,
-                                                 pattern: pattern.map { RedisKey(bytes: $0).display }, payload: payload))
-                    if self.messages.count > Self.maxMessages { self.messages.removeFirst(self.messages.count - Self.maxMessages) }
-                    self.revision &+= 1
+                    self.counter &+= 1
+                    self.pending.append(Message(id: self.counter, time: Date(), channel: RedisKey(bytes: channel).display,
+                                                pattern: pattern.map { RedisKey(bytes: $0).display }, payload: payload))
+                    if self.pending.count > Self.maxMessages { self.pending.removeFirst(self.pending.count - Self.maxMessages) }
+                    self.coalescer?.signal()
                 }
             }
+            self?.coalescer?.flushNow()
             if let reason = await session.closeReason { self?.error = "Subscription connection closed: \(reason)" }
         }
+    }
+
+    /// Moves buffered messages into the table (≈10 times per second at most).
+    private func flushPending() {
+        guard !pending.isEmpty else { return }
+        messages.append(contentsOf: pending)
+        pending.removeAll(keepingCapacity: true)
+        if messages.count > Self.maxMessages { messages.removeFirst(messages.count - Self.maxMessages) }
+        revision &+= 1
     }
 
     func publish() {
         let channel = publishChannel.trimmingCharacters(in: .whitespaces)
         guard !channel.isEmpty else { return }
         let message = Array(publishMessage.utf8)
-        Task {
+        let client = workspace.client
+        Task { [weak self] in
             do {
-                let receivers = try await workspace.client.publish(channel: channel, message: message)
-                workspace.showToast("Published to \(channel) · \(receivers) receiver\(receivers == 1 ? "" : "s")")
-                refreshChannels()
+                let receivers = try await client.publish(channel: channel, message: message)
+                self?.workspace.showToast("Published to \(channel) · \(receivers) receiver\(receivers == 1 ? "" : "s")")
+                self?.refreshChannels()
             } catch {
-                workspace.showToast(describe(error), isError: true)
+                self?.workspace.showToast(describe(error), isError: true)
             }
         }
     }
 
     func refreshChannels() {
         guard workspace.capabilities.supports(.pubsubIntrospection) else { return }
-        Task {
-            channels = (try? await workspace.client.pubsubChannels()) ?? []
+        let client = workspace.client
+        Task { [weak self] in
+            let channels = (try? await client.pubsubChannels()) ?? []
+            self?.channels = channels
         }
     }
 
     func clearMessages() {
+        pending.removeAll()
         messages.removeAll()
         revision &+= 1
     }
 
-    func close() {
+    private func closeSession() {
+        sessionGeneration &+= 1
         listenTask?.cancel()
+        listenTask = nil
+        coalescer?.cancel()
         let session = session
         self.session = nil
         subscriptions.removeAll()
         patterns.removeAll()
         Task { await session?.close() }
+    }
+
+    func close() {
+        commandChain?.cancel()
+        commandChain = nil
+        closeSession()
     }
 }
 

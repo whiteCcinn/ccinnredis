@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 @Observable
 final class ClusterModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     private(set) var nodes: [ClusterNodeInfo] = []
     private(set) var info: [String: String] = [:]
     private(set) var error: String?

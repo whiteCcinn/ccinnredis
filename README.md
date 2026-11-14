@@ -183,15 +183,19 @@ scripts/package-release.sh 1.0.0     # universal .app, .zip, .dmg and checksums 
 Docker is required. `scripts/redis-up.sh` starts memory-capped containers named `ccinnredis-it-*` on `127.0.0.1:17000-17999`, in groups — start a few at a time:
 
 ```bash
-scripts/redis-up.sh legacy modern auth   # Redis 2.8/3.2/4.0, 7.4/8.2/Valkey 8, 5.0 (requirepass) + 6.2 (ACL)
-scripts/redis-up.sh large tls stack      # Redis 7.2 with 200,000 keys, TLS, redis-stack
+swift build                                   # the MCP test launches the built binary
+scripts/redis-up.sh legacy modern             # Redis 2.8/3.2/4.0, 7.4/8.2/Valkey 8
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=legacy,modern swift test --filter IntegrationTests
+scripts/redis-down.sh
+scripts/redis-up.sh auth large tls stack      # 5.0 (requirepass) + 6.2 (ACL), 7.2 with 200,000 keys, TLS, redis-stack
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=auth,large,tls,stack swift test --filter IntegrationTests
+scripts/redis-down.sh
 scripts/redis-up.sh cluster sentinel proxy
-swift build                              # the MCP test launches the built binary
-CCINNREDIS_IT=1 swift test --filter IntegrationTests
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=cluster,sentinel,proxy swift test --filter IntegrationTests
 scripts/redis-down.sh
 ```
 
-Tests for servers that are not running fail with connection errors, so run the suites that match the groups you started (for example `--filter "Integration: cluster"`).
+`CCINNREDIS_IT_GROUPS` selects the groups you started (unset means all of them). Tests for a selected group whose server is down fail; they are never skipped silently.
 
 The MCP integration test starts `CcinnRedis mcp` as a subprocess. It uses two **test-only** environment variables that are not meant for normal use: `CCINNREDIS_PROFILE_DIR=<path>` reads profiles from another folder (the audit log goes there too), and `CCINNREDIS_TEST_INSECURE_SECRETS_FILE=<json>` reads passwords from a JSON file instead of the Keychain.
 

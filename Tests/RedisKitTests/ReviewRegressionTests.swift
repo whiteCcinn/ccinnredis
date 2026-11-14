@@ -1,4 +1,5 @@
 import Foundation
+import os
 import RESPWire
 import Testing
 @testable import RedisKit
@@ -75,5 +76,110 @@ struct RedisKitReviewRegressionTests {
         }
         #expect(SSHTunnel.askPassSecret(for: .agent, secret: "pw") == "")
         #expect(SSHTunnel.askPassSecret(for: .privateKey, secret: "pp") == "pp")
+    }
+
+    // Finding 3: list edits by index verify the element they were shown, atomically (WATCH + MULTI).
+    @Test func listEditsVerifyTheExpectedElement() async throws {
+        let list = WatchedList(["a", "b", "c"])
+        let backend = standaloneBackend(extra: list.handle)
+        let client = try await RedisClient.connect(ClientConfiguration(mode: .standalone(Endpoint(host: "h"))), connector: backend.connector)
+        let key = RedisKey("l")
+        try await client.listSet(key, index: 1, value: Array("B".utf8), expected: Array("b".utf8))
+        #expect(list.items == ["a", "B", "c"])
+        await #expect(throws: RedisError.self) {
+            try await client.listSet(key, index: 1, value: Array("X".utf8), expected: Array("b".utf8))
+        }
+        #expect(list.items == ["a", "B", "c"])
+        try await client.listRemove(key, index: 0, expected: Array("a".utf8))
+        #expect(list.items == ["B", "c"])
+        // Another client modifies the list between the check and EXEC: WATCH aborts the transaction.
+        list.mutateAfterCheck()
+        do {
+            try await client.listRemove(key, index: 0, expected: Array("B".utf8))
+            Issue.record("expected a conflict")
+        } catch let error as RedisError {
+            #expect(error.kind == .conflict)
+        }
+        #expect(list.items == ["B", "c", "pushed"])
+        await client.close()
+    }
+}
+
+/// A list with per-connection WATCH/MULTI semantics, enough to exercise optimistic edits.
+final class WatchedList: @unchecked Sendable {
+    private struct State {
+        var items: [String]
+        var watchers: Set<Int> = []
+        var dirty: Set<Int> = []
+        var queued: [Int: [[String]]] = [:]
+        var mutateAfterCheck = false
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+
+    init(_ items: [String]) { state = OSAllocatedUnfairLock(uncheckedState: State(items: items)) }
+
+    var items: [String] { state.withLockUnchecked { $0.items } }
+    func mutateAfterCheck() { state.withLockUnchecked { $0.mutateAfterCheck = true } }
+
+    func handle(_ request: FakeRequest) -> FakeAction? {
+        state.withLockUnchecked { state in
+            let connection = request.connectionIndex
+            let words = request.strings
+            func touch() { state.dirty.formUnion(state.watchers) }
+            func apply(_ words: [String]) -> RESPValue {
+                switch words[0].uppercased() {
+                case "LSET":
+                    guard let index = Int(words[2]), state.items.indices.contains(index) else { return .err("ERR index out of range") }
+                    state.items[index] = words[3]
+                    touch()
+                    return .ok
+                case "LREM":
+                    guard let index = state.items.firstIndex(of: words[3]) else { return .integer(0) }
+                    state.items.remove(at: index)
+                    touch()
+                    return .integer(1)
+                default:
+                    return .err("ERR unsupported")
+                }
+            }
+            switch request.name {
+            case "WATCH":
+                state.watchers.insert(connection)
+                state.dirty.remove(connection)
+                return .reply(.ok)
+            case "UNWATCH":
+                state.watchers.remove(connection)
+                return .reply(.ok)
+            case "LINDEX":
+                let index = Int(words[2]) ?? -1
+                let reply: RESPValue = state.items.indices.contains(index) ? .bulk(state.items[index]) : .null
+                if state.mutateAfterCheck {
+                    state.mutateAfterCheck = false
+                    state.items.append("pushed")
+                    touch()
+                }
+                return .reply(reply)
+            case "MULTI":
+                state.queued[connection] = []
+                return .reply(.ok)
+            case "LSET", "LREM":
+                if state.queued[connection] != nil {
+                    state.queued[connection]?.append(words)
+                    return .reply(.simpleString("QUEUED"))
+                }
+                return .reply(apply(words))
+            case "EXEC":
+                let queued = state.queued.removeValue(forKey: connection) ?? []
+                defer {
+                    state.watchers.remove(connection)
+                    state.dirty.remove(connection)
+                }
+                if state.dirty.contains(connection) { return .reply(.null) }
+                return .reply(.array(queued.map(apply)))
+            default:
+                return nil
+            }
+        }
     }
 }

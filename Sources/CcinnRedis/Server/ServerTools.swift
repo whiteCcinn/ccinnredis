@@ -42,7 +42,7 @@ private struct FilterField: View {
 @MainActor
 @Observable
 final class ServerInfoModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var node: Endpoint? { didSet { if oldValue != node { load() } } }
     var filter = ""
     private(set) var info: InfoSnapshot?
@@ -143,7 +143,7 @@ struct ServerInfoView: View {
 @MainActor
 @Observable
 final class SlowlogModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var count = 128 { didSet { load() } }
     private(set) var entries: [SlowlogEntry] = []
     private(set) var error: String?
@@ -252,7 +252,7 @@ struct SlowlogView: View {
 @MainActor
 @Observable
 final class ClientsModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var node: Endpoint? { didSet { if oldValue != node { load() } } }
     var filter = "" { didSet { revision &+= 1 } }
     private(set) var clients: [ClientInfo] = []
@@ -360,7 +360,7 @@ struct ClientsView: View {
 @MainActor
 @Observable
 final class ConfigModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var node: Endpoint? { didSet { if oldValue != node { load() } } }
     var filter = "" { didSet { revision &+= 1 } }
     private(set) var entries: [ConfigEntry] = []
@@ -378,7 +378,16 @@ final class ConfigModel {
     var visible: [ConfigEntry] {
         let needle = filter.trimmingCharacters(in: .whitespaces)
         guard !needle.isEmpty else { return entries }
-        return entries.filter { $0.name.localizedCaseInsensitiveContains(needle) || $0.value.localizedCaseInsensitiveContains(needle) }
+        // Secret values are never searchable (a filter would reveal them character by character).
+        return entries.filter {
+            $0.name.localizedCaseInsensitiveContains(needle)
+                || (!SecretConfig.isSecret($0.name) && $0.value.localizedCaseInsensitiveContains(needle))
+        }
+    }
+
+    /// What the table shows: secrets (requirepass, masterauth, TLS passphrases…) are masked.
+    static func displayValue(_ entry: ConfigEntry) -> String {
+        SecretConfig.isSecret(entry.name) && !entry.value.isEmpty ? SecretConfig.mask : entry.value
     }
 
     func load() {
@@ -397,7 +406,8 @@ final class ConfigModel {
     }
 
     func set(_ name: String, value: String) {
-        workspace.confirm(Confirmation(title: "Change \(name)?", message: "CONFIG SET \(name) \(value)\nThe change applies immediately and is lost on restart unless CONFIG REWRITE is run.",
+        let shown = SecretConfig.isSecret(name) ? SecretConfig.mask : value
+        workspace.confirm(Confirmation(title: "Change \(name)?", message: "CONFIG SET \(name) \(shown)\nThe change applies immediately and is lost on restart unless CONFIG REWRITE is run.",
                                        confirmTitle: "Apply") { [weak self] in
             guard let self else { return }
             self.workspace.perform("\(name) updated") {
@@ -428,7 +438,7 @@ struct ConfigView: View {
                     TableColumnSpec(id: "name", title: "Parameter", width: 280, monospaced: true),
                     TableColumnSpec(id: "value", title: "Value", width: 480, monospaced: true, flexible: true),
                 ], rowCount: rows.count, revision: model.revision, cell: { row, column in
-                    column == 0 ? rows[row].name : rows[row].value
+                    column == 0 ? rows[row].name : ConfigModel.displayValue(rows[row])
                 }, onDoubleClick: { row in
                     guard rows.indices.contains(row), !model.workspace.isReadOnly else { return }
                     model.editing = rows[row]
@@ -450,7 +460,12 @@ private struct ConfigEditSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(entry.name).font(.headline.monospaced())
-            TextField("Value", text: $value).textFieldStyle(.roundedBorder).font(Theme.monospaced)
+            if isSecret {
+                SecureField("New value", text: $value).textFieldStyle(.roundedBorder).font(Theme.monospaced)
+                Text("The current value is hidden.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                TextField("Value", text: $value).textFieldStyle(.roundedBorder).font(Theme.monospaced)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -459,11 +474,13 @@ private struct ConfigEditSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(value == entry.value)
+                .disabled(value == entry.value || (isSecret && value.isEmpty))
             }
         }
         .padding(20)
         .frame(width: 460)
-        .onAppear { value = entry.value }
+        .onAppear { value = isSecret ? "" : entry.value }
     }
+
+    private var isSecret: Bool { SecretConfig.isSecret(entry.name) }
 }

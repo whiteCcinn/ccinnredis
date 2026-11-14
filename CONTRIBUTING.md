@@ -20,11 +20,15 @@ scripts/build-app.sh --open
 Containers are named `ccinnredis-it-*`, bound to `127.0.0.1:17000-17999` and capped at 128 MB each. Start a few groups at a time:
 
 ```bash
-scripts/redis-up.sh legacy modern auth      # 2.8, 3.2, 4.0, 7.4, 8.2, Valkey 8, 5.0 (requirepass), 6.2 (ACL)
-CCINNREDIS_IT=1 swift test --filter "Integration: standalone"
+swift build                                   # the MCP test launches the built binary
+scripts/redis-up.sh legacy modern             # 2.8, 3.2, 4.0, 7.4, 8.2, Valkey 8 (6 containers)
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=legacy,modern swift test --filter IntegrationTests
 scripts/redis-down.sh
-scripts/redis-up.sh large tls stack cluster sentinel proxy
-CCINNREDIS_IT=1 swift test --filter IntegrationTests
+scripts/redis-up.sh auth large tls stack      # 5.0 (requirepass), 6.2 (ACL), 7.2 (200k keys), TLS, redis-stack
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=auth,large,tls,stack swift test --filter IntegrationTests
+scripts/redis-down.sh
+scripts/redis-up.sh cluster sentinel proxy
+CCINNREDIS_IT=1 CCINNREDIS_IT_GROUPS=cluster,sentinel,proxy swift test --filter IntegrationTests
 scripts/redis-down.sh
 ```
 

@@ -23,6 +23,8 @@ public struct RedisError: Error, LocalizedError, Sendable, Equatable, CustomStri
         case readOnly
         /// Cluster/sentinel topology could not be resolved.
         case topology
+        /// The data changed since it was read (optimistic check failed); nothing was modified.
+        case conflict
     }
 
     public let kind: Kind
@@ -58,7 +60,7 @@ public struct RedisError: Error, LocalizedError, Sendable, Equatable, CustomStri
     /// Errors after which the connection must not be reused.
     public var breaksConnection: Bool {
         switch kind {
-        case .server, .authentication, .invalidArgument, .busy, .unsupported, .readOnly: false
+        case .server, .authentication, .invalidArgument, .busy, .unsupported, .readOnly, .conflict: false
         default: true
         }
     }

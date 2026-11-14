@@ -8,6 +8,14 @@ import Testing
 enum IT {
     static let isEnabled = ProcessInfo.processInfo.environment["CCINNREDIS_IT"] == "1"
 
+    /// `CCINNREDIS_IT_GROUPS=legacy,modern` limits the run to the groups started with `scripts/redis-up.sh`
+    /// (Docker is shared, so the matrix runs in batches). Unset means every group. Selected groups are
+    /// never skipped silently: a selected server that is down fails its tests.
+    static let groups: Set<String>? = ProcessInfo.processInfo.environment["CCINNREDIS_IT_GROUPS"]
+        .map { Set($0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }) }
+
+    static func wants(_ group: String) -> Bool { isEnabled && (groups?.contains(group) ?? true) }
+
     struct Server: Sendable, CustomTestStringConvertible {
         let label: String
         let port: Int
@@ -15,21 +23,28 @@ enum IT {
         let major: Int
         let minor: Int
         var password: String?
+        var group: String
         var testDescription: String { label }
     }
 
-    static let standalone: [Server] = [
-        Server(label: "Redis 2.8", port: 17028, family: .redis, major: 2, minor: 8),
-        Server(label: "Redis 3.2", port: 17032, family: .redis, major: 3, minor: 2),
-        Server(label: "Redis 4.0", port: 17040, family: .redis, major: 4, minor: 0),
-        Server(label: "Redis 5.0 (requirepass)", port: 17050, family: .redis, major: 5, minor: 0, password: "ccinn-pass"),
-        Server(label: "Redis 6.2", port: 17062, family: .redis, major: 6, minor: 2),
-        Server(label: "Redis 7.2", port: 17072, family: .redis, major: 7, minor: 2),
-        Server(label: "Redis 7.4", port: 17074, family: .redis, major: 7, minor: 4),
-        Server(label: "Redis 8.2", port: 17082, family: .redis, major: 8, minor: 2),
-        Server(label: "Valkey 8", port: 17088, family: .valkey, major: 8, minor: 0),
-        Server(label: "redis-stack 7.4", port: 17095, family: .redis, major: 7, minor: 4),
+    static let redis50 = Server(label: "Redis 5.0 (requirepass)", port: 17050, family: .redis, major: 5, minor: 0, password: "ccinn-pass", group: "auth")
+    static let redis72 = Server(label: "Redis 7.2", port: 17072, family: .redis, major: 7, minor: 2, group: "large")
+
+    static let allStandalone: [Server] = [
+        Server(label: "Redis 2.8", port: 17028, family: .redis, major: 2, minor: 8, group: "legacy"),
+        Server(label: "Redis 3.2", port: 17032, family: .redis, major: 3, minor: 2, group: "legacy"),
+        Server(label: "Redis 4.0", port: 17040, family: .redis, major: 4, minor: 0, group: "legacy"),
+        redis50,
+        Server(label: "Redis 6.2", port: 17062, family: .redis, major: 6, minor: 2, group: "auth"),
+        redis72,
+        Server(label: "Redis 7.4", port: 17074, family: .redis, major: 7, minor: 4, group: "modern"),
+        Server(label: "Redis 8.2", port: 17082, family: .redis, major: 8, minor: 2, group: "modern"),
+        Server(label: "Valkey 8", port: 17088, family: .valkey, major: 8, minor: 0, group: "modern"),
+        Server(label: "redis-stack 7.4", port: 17095, family: .redis, major: 7, minor: 4, group: "stack"),
     ]
+
+    /// The standalone servers of the selected groups.
+    static let standalone: [Server] = allStandalone.filter { wants($0.group) }
 
     static func connect(_ server: Server, readOnly: Bool = false, protocolPreference: ProtocolPreference = .auto) async throws -> RedisClient {
         try await RedisClient.connect(ClientConfiguration(mode: .standalone(Endpoint(host: "127.0.0.1", port: server.port)),
@@ -134,6 +149,13 @@ struct StandaloneIntegrationTests {
         try await client.listSet(list, index: 0, value: Array("A".utf8))
         try await client.listRemove(list, index: 2)
         #expect(try await client.listRange(list, start: 0, stop: -1).map { String(decoding: $0, as: UTF8.self) } == ["A", "b", "d"])
+        // Verified edits (WATCH + LINDEX + MULTI): a stale expected value is refused and changes nothing.
+        try await client.listSet(list, index: 1, value: Array("B".utf8), expected: Array("b".utf8))
+        await #expect(throws: RedisError.self) {
+            try await client.listRemove(list, index: 1, expected: Array("b".utf8))
+        }
+        try await client.listRemove(list, index: 2, expected: Array("d".utf8))
+        #expect(try await client.listRange(list, start: 0, stop: -1).map { String(decoding: $0, as: UTF8.self) } == ["A", "B"])
 
         let set = RedisKey("\(prefix):set")
         try await client.setAdd(set, members: [Array("x".utf8), Array("y".utf8)])
@@ -206,15 +228,15 @@ struct StandaloneIntegrationTests {
         #expect(report.usesEstimates == !client.capabilities.supports(.memoryUsage))
     }
 
-    @Test func resp2PreferenceOnModernServer() async throws {
-        let client = try await IT.connect(IT.standalone[5], protocolPreference: .resp2)
+    @Test(.enabled(if: IT.wants("large"))) func resp2PreferenceOnModernServer() async throws {
+        let client = try await IT.connect(IT.redis72, protocolPreference: .resp2)
         defer { Task { await client.close() } }
         #expect(client.protocolVersion == 2)
         #expect(try await client.hashGetAll(RedisKey("demo:hash:user:1")).count == 5)
     }
 
-    @Test func largeKeyspaceIsScannedCompletely() async throws {
-        let client = try await IT.connect(IT.standalone[5])
+    @Test(.enabled(if: IT.wants("large"))) func largeKeyspaceIsScannedCompletely() async throws {
+        let client = try await IT.connect(IT.redis72)
         defer { Task { await client.close() } }
         #expect(try await client.dbSize() >= 200_000)
         let scanner = KeyScanner(client: client, pattern: nil, type: nil, count: 5000)
@@ -229,8 +251,8 @@ struct StandaloneIntegrationTests {
         print("scanned \(collection.count) keys in \(elapsed)")
     }
 
-    @Test func pubSubOverRESP3AndRESP2() async throws {
-        for (server, preference) in [(IT.standalone[5], ProtocolPreference.auto), (IT.standalone[3], ProtocolPreference.auto)] {
+    @Test(.enabled(if: IT.wants("large") && IT.wants("auth"))) func pubSubOverRESP3AndRESP2() async throws {
+        for (server, preference) in [(IT.redis72, ProtocolPreference.auto), (IT.redis50, ProtocolPreference.auto)] {
             let client = try await IT.connect(server, protocolPreference: preference)
             let session = try await StreamingSession.open(client: client, initial: [RedisCommand("SUBSCRIBE", ["it:news"]), RedisCommand("PSUBSCRIBE", ["it:n*"])])
             var iterator = session.frames.makeAsyncIterator()
@@ -257,7 +279,7 @@ struct StandaloneIntegrationTests {
 
 @Suite("Integration: authentication and TLS", .enabled(if: IT.isEnabled), .serialized)
 struct AuthenticationIntegrationTests {
-    @Test func legacyRequirePass() async throws {
+    @Test(.enabled(if: IT.wants("auth"))) func legacyRequirePass() async throws {
         let client = try await IT.connect(port: 17050) { $0.credentials = Credentials(password: "ccinn-pass") }
         #expect(client.protocolVersion == 2)
         await client.close()
@@ -278,7 +300,7 @@ struct AuthenticationIntegrationTests {
         }
     }
 
-    @Test func aclUsers() async throws {
+    @Test(.enabled(if: IT.wants("auth"))) func aclUsers() async throws {
         let client = try await IT.connect(port: 17062) { $0.credentials = Credentials(username: "ccinn", password: "ccinn-acl-pass") }
         #expect(try await client.execute(RedisCommand("ACL", ["WHOAMI"])).string == "ccinn")
         await client.close()
@@ -297,7 +319,7 @@ struct AuthenticationIntegrationTests {
         }
     }
 
-    @Test func tlsWithCustomCA() async throws {
+    @Test(.enabled(if: IT.wants("tls"))) func tlsWithCustomCA() async throws {
         let ca = IT.packageRoot.appendingPathComponent(".build/it-tls/ca.crt").path
         let client = try await IT.connect(port: 17076) { $0.tls = TLSOptions(caFile: ca) }
         #expect(try await client.execute(RedisCommand("GET", ["tls:hello"])).string == "secure")
@@ -315,7 +337,7 @@ struct AuthenticationIntegrationTests {
         }
     }
 
-    @Test func modulesAndRedisJSON() async throws {
+    @Test(.enabled(if: IT.wants("stack"))) func modulesAndRedisJSON() async throws {
         let client = try await IT.connect(port: 17095)
         defer { Task { await client.close() } }
         #expect(client.hasJSONModule)
@@ -329,7 +351,7 @@ struct AuthenticationIntegrationTests {
     }
 }
 
-@Suite("Integration: cluster", .enabled(if: IT.isEnabled), .serialized)
+@Suite("Integration: cluster", .enabled(if: IT.wants("cluster")), .serialized)
 struct ClusterIntegrationTests {
     private func connect(scanReplicas: Bool = false) async throws -> RedisClient {
         try await RedisClient.connect(ClientConfiguration(mode: .cluster(seeds: [Endpoint(host: "127.0.0.1", port: 17101)]), scanReplicas: scanReplicas))
@@ -396,7 +418,7 @@ struct ClusterIntegrationTests {
     }
 }
 
-@Suite("Integration: sentinel", .enabled(if: IT.isEnabled), .serialized)
+@Suite("Integration: sentinel", .enabled(if: IT.wants("sentinel")), .serialized)
 struct SentinelIntegrationTests {
     private func configuration(role: ClientConfiguration.SentinelRole) -> ClientConfiguration {
         ClientConfiguration(mode: .sentinel(sentinels: [17311, 17312, 17313].map { Endpoint(host: "127.0.0.1", port: $0) }, masterName: "mymaster", role: role))
@@ -439,7 +461,7 @@ struct SentinelIntegrationTests {
     }
 }
 
-@Suite("Integration: proxies", .enabled(if: IT.isEnabled), .serialized)
+@Suite("Integration: proxies", .enabled(if: IT.wants("proxy")), .serialized)
 struct ProxyIntegrationTests {
     @Test func twemproxyDegradesGracefully() async throws {
         let client = try await IT.connect(port: 17201)
@@ -460,6 +482,14 @@ struct ProxyIntegrationTests {
         #expect(details.type == .hash)
         #expect(details.length == 1)
         #expect(try await client.execute(RedisCommand("GET", ["proxy:key:7"])).string == "value-7")
+        // Verified list edits fall back to a best-effort LINDEX check (no WATCH/MULTI through twemproxy).
+        let list = RedisKey("it:twem:list:\(UUID().uuidString.prefix(6))")
+        try await client.listPush(list, values: ["a", "b"].map { Array($0.utf8) }, atHead: false)
+        try await client.listSet(list, index: 0, value: Array("A".utf8), expected: Array("a".utf8))
+        await #expect(throws: RedisError.self) { try await client.listRemove(list, index: 1, expected: Array("x".utf8)) }
+        try await client.listRemove(list, index: 1, expected: Array("b".utf8))
+        #expect(try await client.listRange(list, start: 0, stop: -1) == [Array("A".utf8)])
+        _ = try await client.delete([list])
     }
 
     @Test func envoyDegradesGracefully() async throws {

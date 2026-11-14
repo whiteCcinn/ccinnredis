@@ -21,13 +21,15 @@ struct ConsoleEntry: Identifiable {
 @Observable
 final class ConsoleModel {
     let title: String
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
 
     private(set) var entries: [ConsoleEntry] = []
     var input = ""
     private(set) var isRunning = false
     private(set) var isStreaming = false
-    private(set) var database: Int
+    /// Selected database and transaction state, tracked from replies (nil database = unknown).
+    private(set) var session: ConsoleSessionState
+    var database: Int? { session.database }
     /// Cluster only: `nil` routes each command by its key.
     var targetNode: Endpoint? {
         didSet { if oldValue != targetNode { dropConnection() } }
@@ -42,6 +44,9 @@ final class ConsoleModel {
     private var runTask: Task<Void, Never>?
     private var streaming: StreamingSession?
     private var streamTask: Task<Void, Never>?
+    @ObservationIgnored private var liveLines = RingBuffer<String>(capacity: ConsoleModel.maxLiveLines)
+    @ObservationIgnored private var liveEntryID: UUID?
+    @ObservationIgnored private var liveCoalescer: UpdateCoalescer?
 
     static let maxEntries = 400
     static let maxLiveLines = 2000
@@ -49,10 +54,11 @@ final class ConsoleModel {
     init(workspace: WorkspaceModel, title: String) {
         self.workspace = workspace
         self.title = title
-        database = workspace.client.database
+        session = ConsoleSessionState(database: workspace.client.database)
         history = ConsoleHistory.load(directory: AppServices.shared.historyDirectory, profileID: workspace.profile.id)
         catalog = CommandCatalog(serverVersion: workspace.serverInfo.version, family: workspace.serverInfo.family,
                                  extra: workspace.client.serverOnlyCommands)
+        liveCoalescer = UpdateCoalescer { [weak self] in self?.flushLiveLines() }
     }
 
     var client: RedisClient { workspace.client }
@@ -60,7 +66,8 @@ final class ConsoleModel {
 
     var prompt: String {
         if isCluster { return (targetNode?.description ?? "cluster") + ">" }
-        return client.primaryEndpoint.description + (database == 0 ? "" : "[\(database)]") + ">"
+        let databaseLabel = database.map { $0 == 0 ? "" : "[\($0)]" } ?? "[?]"
+        return client.primaryEndpoint.description + databaseLabel + (session.inTransaction ? "(TX)" : "") + ">"
     }
 
     func start(initialCommands: String?) {
@@ -166,7 +173,8 @@ final class ConsoleModel {
             return
         }
 
-        switch CommandSafety.assess(command, database: database, connectionName: workspace.connectionName) {
+        switch CommandSafety.assess(command, database: isCluster ? 0 : database, connectionName: workspace.connectionName,
+                                    spec: client.spec(for: command)) {
         case .allowed:
             await run(command, line: line)
         case let .confirmation(reason):
@@ -206,9 +214,7 @@ final class ConsoleModel {
                 let connection = try await activeConnection()
                 let blocking = CommandSpecs.spec(for: command)?.flags.contains(.blocking) == true
                 reply = try await connection.pipeline([command], timeout: blocking ? nil : client.configuration.commandTimeout)[0]
-                if command.name == "SELECT", !reply.isError, let index = command.argument(1).flatMap({ Int(String(decoding: $0, as: UTF8.self)) }) {
-                    database = index
-                }
+                session.apply(command, reply: reply)
                 target = isCluster ? targetNode?.description : nil
             }
             append(command: line, output: Self.render(reply, raw: rawOutput), isError: reply.isError, duration: clock.now - start, target: target)
@@ -223,14 +229,18 @@ final class ConsoleModel {
         if let connection, await !connection.isBroken { return connection }
         let route: Route = targetNode.map { .node($0) } ?? .auto
         var (fresh, _) = try await client.dedicatedConnection(route: route)
-        if database != client.database, !isCluster {
-            // Restore the database chosen with SELECT in this console after a reconnect.
-            let reply = try await fresh.pipeline([RedisCommand("SELECT", [.int(database)])])[0]
-            if reply.isError {
+        // A new connection is never inside a transaction; restore the database chosen with SELECT.
+        if let wanted = database, wanted != client.database, !isCluster {
+            let reply = try await fresh.pipeline([RedisCommand("SELECT", [.int(wanted)])])[0]
+            if reply.string == "OK" {
+                session.reset(database: wanted)
+            } else {
                 await fresh.close()
                 (fresh, _) = try await client.dedicatedConnection(route: route)
-                database = client.database
+                session.reset(database: client.database)
             }
+        } else {
+            session.reset(database: client.database)
         }
         connection = fresh
         connectionEndpoint = fresh.endpoint
@@ -256,10 +266,10 @@ final class ConsoleModel {
                                      isError: false, duration: nil, target: session.endpoint.description, isLive: true)
             entries.append(entry)
             trimEntries()
-            let entryID = entry.id
+            liveLines.removeAll()
+            liveEntryID = entry.id
             let frames = session.frames
             streamTask = Task { [weak self] in
-                var lines: [String] = []
                 for await frame in frames {
                     guard let self else { return }
                     let text: String
@@ -270,15 +280,13 @@ final class ConsoleModel {
                     case let .subscribed(kind, channel, count):
                         text = "\(kind) \(channel) (\(count) active)"
                     default:
-                        text = frame.string ?? ReplyFormatter.format(frame)
+                        text = frame.string ?? ReplyFormatter.format(frame, limits: ReplyFormatter.Limits(maxElements: 100, maxStringBytes: 4096))
                     }
-                    lines.append(text)
-                    if lines.count > Self.maxLiveLines { lines.removeFirst(lines.count - Self.maxLiveLines) }
-                    if let index = self.entries.firstIndex(where: { $0.id == entryID }) {
-                        self.entries[index].output = self.plain(lines.joined(separator: "\n"))
-                        self.revision &+= 1
-                    }
+                    // O(1) per frame; the entry is re-rendered at most ~10 times per second.
+                    self.liveLines.append(text)
+                    self.liveCoalescer?.signal()
                 }
+                self?.liveCoalescer?.flushNow()
                 self?.isStreaming = false
             }
             entry.isLive = true
@@ -287,9 +295,19 @@ final class ConsoleModel {
         }
     }
 
+    /// Renders the buffered live lines into the streaming entry.
+    private func flushLiveLines() {
+        guard let liveEntryID, let index = entries.firstIndex(where: { $0.id == liveEntryID }) else { return }
+        entries[index].output = plain(liveLines.elements.joined(separator: "\n"))
+        revision &+= 1
+    }
+
     func stopStreaming() {
         streamTask?.cancel()
         streamTask = nil
+        liveCoalescer?.flushNow()
+        liveCoalescer?.cancel()
+        liveEntryID = nil
         let session = streaming
         streaming = nil
         isStreaming = false

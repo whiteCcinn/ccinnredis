@@ -130,7 +130,7 @@ private struct StringEditorView: View {
                 }
                 Spacer()
                 Button("Copy") { Pasteboard.copy(model.stringDraft) }
-                Button("Revert") { model.changeStringFormat(model.stringFormat); model.stringDirty = false }
+                Button("Revert") { model.revertString() }
                     .disabled(!model.stringDirty)
                 Button("Save") { model.saveString() }
                     .keyboardShortcut("s", modifiers: .command)
@@ -278,7 +278,7 @@ private struct ListEditorView: View {
         .sheet(item: $editing) { draft in
             ElementEditSheet(draft: draft, isReadOnly: model.isReadOnly) { result in
                 if let index = draft.index {
-                    model.setListItem(index: index, value: result.value)
+                    model.setListItem(index: index, value: result.value, expected: draft.value)
                 } else {
                     model.pushListItem(result.value, atHead: draft.atHead)
                 }
@@ -289,8 +289,9 @@ private struct ListEditorView: View {
     private func removeSelected() {
         guard let row = model.selection.first, model.listItems.indices.contains(row) else { return }
         let index = model.listStart + row
+        let expected = model.listItems[row]
         model.workspace.confirm(Confirmation(title: "Remove item \(index)?", message: "The element at index \(index) is removed from the list.",
-                                             confirmTitle: "Remove") { model.removeListItem(index: index) })
+                                             confirmTitle: "Remove") { model.removeListItem(index: index, expected: expected) })
     }
 }
 

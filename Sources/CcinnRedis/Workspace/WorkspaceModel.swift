@@ -208,7 +208,7 @@ final class WorkspaceModel {
         // Replace an untouched key tab instead of piling up tabs while browsing.
         let model = KeyEditorModel(key: key, workspace: self)
         let tab = WorkspaceTab(kind: .key(model))
-        if let selected = selectedTab, case let .key(current) = selected.kind, !current.isPinned,
+        if let selected = selectedTab, case let .key(current) = selected.kind, !current.isPinned, !current.hasUnsavedEdits,
            let index = tabs.firstIndex(of: selected) {
             closeResources(of: selected)
             tabs[index] = tab

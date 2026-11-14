@@ -32,7 +32,7 @@ final class DashboardModel {
         let hitRatio: Double?
     }
 
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var node: Endpoint? {
         didSet { if oldValue != node { samples.removeAll(); info = nil; restart() } }
     }
@@ -74,15 +74,20 @@ final class DashboardModel {
 
     func stop() { task?.cancel() }
 
+    /// INFO numbers are untrusted: NaN/inf/negative values become 0 so charts and tiles never misbehave.
+    private static func metric(_ snapshot: InfoSnapshot, _ name: String) -> Double {
+        max(0, SafeNumber.finite(snapshot.double(name)) ?? 0)
+    }
+
     private func ingest(_ snapshot: InfoSnapshot) {
         info = snapshot
-        let hits = snapshot.double("keyspace_hits") ?? 0
-        let misses = snapshot.double("keyspace_misses") ?? 0
+        let hits = Self.metric(snapshot, "keyspace_hits")
+        let misses = Self.metric(snapshot, "keyspace_misses")
         var ratio: Double?
         if let previous = previousHits {
             let deltaHits = hits - previous.hits
             let deltaMisses = misses - previous.misses
-            if deltaHits + deltaMisses > 0 {
+            if deltaHits >= 0, deltaMisses >= 0, deltaHits + deltaMisses > 0 {
                 ratio = deltaHits / (deltaHits + deltaMisses) * 100
             } else if hits + misses > 0 {
                 ratio = hits / (hits + misses) * 100 // idle interval: lifetime ratio
@@ -91,10 +96,10 @@ final class DashboardModel {
             ratio = hits / (hits + misses) * 100
         }
         previousHits = (hits, misses)
-        samples.append(Sample(time: Date(), opsPerSecond: snapshot.double("instantaneous_ops_per_sec") ?? 0,
-                              usedMemory: snapshot.double("used_memory") ?? 0, clients: snapshot.double("connected_clients") ?? 0,
-                              inputKbps: snapshot.double("instantaneous_input_kbps") ?? 0, outputKbps: snapshot.double("instantaneous_output_kbps") ?? 0,
-                              hitRatio: ratio))
+        samples.append(Sample(time: Date(), opsPerSecond: Self.metric(snapshot, "instantaneous_ops_per_sec"),
+                              usedMemory: Self.metric(snapshot, "used_memory"), clients: Self.metric(snapshot, "connected_clients"),
+                              inputKbps: Self.metric(snapshot, "instantaneous_input_kbps"), outputKbps: Self.metric(snapshot, "instantaneous_output_kbps"),
+                              hitRatio: ratio.flatMap { SafeNumber.finite($0) }.map { min(max($0, 0), 100) }))
         if samples.count > Self.maxSamples { samples.removeFirst(samples.count - Self.maxSamples) }
     }
 }
@@ -141,10 +146,10 @@ struct DashboardView: View {
         let used = info.int("used_memory")
         let peak = info.int("used_memory_peak")
         let max = info.int("maxmemory").flatMap { $0 > 0 ? $0 : nil }
-        let keys = info.keyspace.reduce(Int64(0)) { $0 + $1.keys }
+        let keys = SafeNumber.sum(info.keyspace.map(\.keys))
         let hitRatio = model.samples.last?.hitRatio
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            StatTile(title: "Ops / sec", value: Format.count(Int64(info.double("instantaneous_ops_per_sec") ?? 0)),
+            StatTile(title: "Ops / sec", value: Format.count(SafeNumber.int64(info.double("instantaneous_ops_per_sec") ?? 0)),
                      detail: "\(Format.count(info.int("total_commands_processed"))) total", systemImage: "bolt.fill")
             StatTile(title: "Memory", value: Format.bytes(used), detail: max.map { "of \(Format.bytes($0)) max" } ?? "peak \(Format.bytes(peak))",
                      systemImage: "memorychip", tint: .purple)
@@ -184,7 +189,7 @@ struct DashboardView: View {
                 .chartYAxis {
                     AxisMarks { value in
                         AxisGridLine()
-                        AxisValueLabel { Text(Format.bytes(Int64(value.as(Double.self) ?? 0))) }
+                        AxisValueLabel { Text(Format.bytes(SafeNumber.int64(value.as(Double.self) ?? 0))) }
                     }
                 }
             }

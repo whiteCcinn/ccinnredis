@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class AnalysisModel {
-    unowned let workspace: WorkspaceModel
+    let workspace: WorkspaceModel
     var pattern = ""
     var maxKeys = 50_000
     var keysPerSecond = 5_000
@@ -19,6 +19,8 @@ final class AnalysisModel {
     private(set) var error: String?
     private(set) var revision = 0
     private var task: Task<Void, Never>?
+    /// Bumped by start/cancel: a cancelled run that is still finishing its last batch cannot touch the new run.
+    private var runGeneration = 0
 
     init(workspace: WorkspaceModel) {
         self.workspace = workspace
@@ -28,37 +30,51 @@ final class AnalysisModel {
 
     func start() {
         guard !isRunning, unavailableReason == nil else { return }
+        task?.cancel()
+        runGeneration &+= 1
+        let generation = runGeneration
         isRunning = true
         error = nil
         progress = nil
+        report = nil
         let options = MemoryAnalyzer.Options(pattern: pattern.isEmpty ? nil : pattern, maxKeys: maxKeys, keysPerSecond: keysPerSecond,
                                              batchSize: 200, delimiter: workspace.browser.delimiter, prefixDepth: prefixDepth, topCount: 200)
         let analyzer = MemoryAnalyzer(client: workspace.client, options: options)
         task = Task { [weak self] in
+            var failure: String?
+            var finalReport: AnalysisReport?
             do {
-                let result = try await analyzer.run { progress in
-                    Task { @MainActor in
-                        self?.progress = progress
-                        self?.report = progress.report
-                        self?.revision &+= 1
-                    }
+                finalReport = try await analyzer.run { progress in
+                    Task { @MainActor in self?.apply(progress, generation: generation) }
                 }
-                self?.report = result
             } catch is CancellationError {
                 // Partial results stay visible.
             } catch let error as RedisError where error.kind == .cancelled {
                 _ = error
             } catch {
-                self?.error = describe(error)
+                failure = describe(error)
             }
-            self?.isRunning = false
-            self?.revision &+= 1
+            guard let self, self.runGeneration == generation else { return }
+            if let finalReport { self.report = finalReport }
+            if let failure { self.error = failure }
+            self.isRunning = false
+            self.revision &+= 1
         }
+    }
+
+    /// Progress callbacks hop to the main actor independently: drop stale runs and out-of-order updates.
+    private func apply(_ progress: MemoryAnalyzer.Progress, generation: Int) {
+        guard generation == runGeneration, isRunning, progress.sampled >= (self.progress?.sampled ?? 0) else { return }
+        self.progress = progress
+        report = progress.report
+        revision &+= 1
     }
 
     func cancel() {
         task?.cancel()
+        runGeneration &+= 1
         isRunning = false
+        revision &+= 1
     }
 
     func exportCSV() {

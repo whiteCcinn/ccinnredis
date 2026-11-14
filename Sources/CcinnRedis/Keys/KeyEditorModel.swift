@@ -8,7 +8,10 @@ import RedisKit
 @Observable
 final class KeyEditorModel {
     private(set) var key: RedisKey
-    unowned let workspace: WorkspaceModel
+    /// Strong on purpose: the workspace drops its tabs on shutdown, which breaks the cycle; an
+    /// `unowned` reference would trap if a late task outlived the window.
+    let workspace: WorkspaceModel
+    let client: RedisClient
 
     private(set) var details: KeyDetails?
     private(set) var isLoading = false
@@ -60,23 +63,54 @@ final class KeyEditorModel {
 
     static let pageSize = 500
     private var loadTask: Task<Void, Never>?
+    /// Paging, filtering and group loads: one at a time, the newest wins.
+    private var pageTask: Task<Void, Never>?
+    private var pageGeneration = 0
 
     init(key: RedisKey, workspace: WorkspaceModel) {
         self.key = key
         self.workspace = workspace
+        client = workspace.client
     }
 
-    var client: RedisClient { workspace.client }
+    /// Unsaved edits in the string or JSON editor (the tab must not be replaced silently).
+    var hasUnsavedEdits: Bool { stringDirty || jsonDraft != jsonOriginal }
     var type: KeyType { details?.type ?? workspace.browser.metadata[key]?.type ?? .none }
     var isReadOnly: Bool { workspace.isReadOnly }
     var canEditString: Bool { !isReadOnly && !(stringValue?.isTruncated ?? false) }
 
-    func close() { loadTask?.cancel() }
+    func close() {
+        loadTask?.cancel()
+        pageTask?.cancel()
+        loadTask = nil
+        pageTask = nil
+    }
+
+    /// Starts a paging/filter task, cancelling the previous one; `body` runs only while it is current.
+    private func startPageTask(_ body: @escaping @MainActor (_ isCurrent: @escaping @MainActor () -> Bool) async throws -> Void) {
+        pageTask?.cancel()
+        pageGeneration &+= 1
+        let generation = pageGeneration
+        isLoading = true
+        pageTask = Task { [weak self] in
+            guard let self else { return }
+            let isCurrent: @MainActor () -> Bool = { [weak self] in !Task.isCancelled && self?.pageGeneration == generation }
+            do {
+                try await body(isCurrent)
+                if isCurrent() { self.revision &+= 1 }
+            } catch {
+                if isCurrent() { self.error = describe(error) }
+            }
+            if self.pageGeneration == generation { self.isLoading = false }
+        }
+    }
 
     // MARK: Loading
 
     func load() {
         loadTask?.cancel()
+        pageTask?.cancel()
+        pageGeneration &+= 1
         isLoading = true
         error = nil
         loadTask = Task {
@@ -178,45 +212,39 @@ final class KeyEditorModel {
 
     func loadMore() {
         guard !isLoading else { return }
-        isLoading = true
-        Task {
-            defer { isLoading = false }
-            do {
-                if type == .zset, filter.isEmpty { try await loadZSetRange(reset: false) } else { try await loadNextScanPage() }
-                revision &+= 1
-            } catch {
-                self.error = describe(error)
-            }
+        startPageTask { [weak self] _ in
+            guard let self else { return }
+            if self.type == .zset, self.filter.isEmpty { try await self.loadZSetRange(reset: false) } else { try await self.loadNextScanPage() }
         }
     }
 
     func applyFilter() {
-        isLoading = true
-        Task {
-            defer { isLoading = false }
-            do { try await loadValue(reset: true) } catch { self.error = describe(error) }
-        }
+        startPageTask { [weak self] _ in try await self?.loadValue(reset: true) }
     }
 
+    /// Moves the list window; the shown start index always matches the items shown (responses of
+    /// superseded requests are dropped) and the selection is cleared, so edits target the right index.
     func pageList(by delta: Int) {
-        let total = Int(details?.length ?? 0)
-        let next = max(0, min(listStart + delta * Self.listPage, max(0, total - 1)))
+        let total = Int(clamping: details?.length ?? 0)
+        let step = delta.multipliedReportingOverflow(by: Self.listPage)
+        let wanted = listStart.addingReportingOverflow(step.overflow ? 0 : step.partialValue)
+        let next = max(0, min(wanted.overflow ? listStart : wanted.partialValue, max(0, total - 1)))
         guard next != listStart || delta == 0 else { return }
-        listStart = next
-        Task {
-            do {
-                listItems = try await client.listRange(key, start: listStart, stop: listStart + Self.listPage - 1)
-                revision &+= 1
-            } catch { self.error = describe(error) }
+        selection = []
+        let key = key
+        let client = client
+        startPageTask { [weak self] isCurrent in
+            let items = try await client.listRange(key, start: next, stop: next + Self.listPage - 1)
+            guard let self, isCurrent() else { return }
+            self.listStart = next
+            self.listItems = items
+            self.selection = []
         }
     }
 
     func selectGroup(_ name: String?) {
         selectedGroup = name
-        Task {
-            try? await loadGroupDetails()
-            revision &+= 1
-        }
+        startPageTask { [weak self] _ in try await self?.loadGroupDetails() }
     }
 
     private func loadGroupDetails() async throws {
@@ -242,11 +270,20 @@ final class KeyEditorModel {
     func saveString() {
         guard canEditString else { return }
         do {
-            let bytes = try ValueFormatter.parse(stringDraft, as: stringFormat)
+            // A compact JSON value edited in its pretty-printed form is stored compact again.
+            let compact = stringFormat == .json && ValueFormatter.isCompactJSON(stringValue?.bytes ?? [])
+            let bytes = try ValueFormatter.parse(stringDraft, as: stringFormat, compactJSON: compact)
             mutate("Saved \(key.display)") { try await self.client.setString(self.key, bytes, keepTTL: true) }
         } catch {
             workspace.showToast(describe(error), isError: true)
         }
+    }
+
+    /// Discards edits: re-renders the loaded value in the current format.
+    func revertString() {
+        guard let value = stringValue else { return }
+        stringDraft = ValueFormatter.render(value.bytes, as: stringFormat)
+        stringDirty = false
     }
 
     func changeStringFormat(_ format: ValueFormat) {
@@ -270,16 +307,18 @@ final class KeyEditorModel {
         mutate("Deleted \(fields.count) field\(fields.count == 1 ? "" : "s")") { try await self.client.hashDelete(self.key, fields: fields) }
     }
 
-    func setListItem(index: Int, value: [UInt8]) {
-        mutate("Saved item") { try await self.client.listSet(self.key, index: index, value: value) }
+    /// `expected` is the element the user edited; the save fails instead of overwriting another element
+    /// when the list changed meanwhile.
+    func setListItem(index: Int, value: [UInt8], expected: [UInt8]) {
+        mutate("Saved item") { try await self.client.listSet(self.key, index: index, value: value, expected: expected) }
     }
 
     func pushListItem(_ value: [UInt8], atHead: Bool) {
         mutate("Added item") { try await self.client.listPush(self.key, values: [value], atHead: atHead) }
     }
 
-    func removeListItem(index: Int) {
-        mutate("Removed item") { try await self.client.listRemove(self.key, index: index) }
+    func removeListItem(index: Int, expected: [UInt8]) {
+        mutate("Removed item") { try await self.client.listRemove(self.key, index: index, expected: expected) }
     }
 
     func addSetMember(_ member: [UInt8]) {

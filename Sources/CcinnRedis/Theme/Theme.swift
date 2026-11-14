@@ -139,9 +139,9 @@ enum Format {
     }
 
     static func duration(seconds: Double) -> String {
-        guard seconds.isFinite else { return "—" }
-        if seconds < 1 { return "\(Int(seconds * 1000)) ms" }
-        let total = Int(seconds)
+        guard seconds.isFinite, seconds >= 0 else { return "—" }
+        if seconds < 1 { return "\(SafeNumber.int(seconds * 1000) ?? 0) ms" }
+        let total = SafeNumber.int(seconds) ?? 0
         let days = total / 86_400
         let hours = total % 86_400 / 3600
         let minutes = total % 3600 / 60

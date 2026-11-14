@@ -94,7 +94,7 @@ enum MCPBinary {
     }
 }
 
-@Suite("Integration: MCP server subprocess", .enabled(if: IT.isEnabled && MCPBinary.url != nil), .serialized)
+@Suite("Integration: MCP server subprocess", .enabled(if: IT.wants("large") && IT.wants("auth") && MCPBinary.url != nil), .serialized)
 struct MCPIntegrationTests {
     private func writeProfiles(to directory: URL) throws {
         func profile(_ name: String, port: Int, access: MCPAccess) -> ConnectionProfile {

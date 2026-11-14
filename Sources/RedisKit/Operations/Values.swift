@@ -150,8 +150,15 @@ extension RedisClient {
         (try await execute(RedisCommand("LRANGE", [.key(key), .int(start), .int(stop)])).array ?? []).map { $0.bytes ?? [] }
     }
 
-    public func listSet(_ key: RedisKey, index: Int, value: [UInt8]) async throws {
-        try await execute(RedisCommand("LSET", [.key(key), .int(index), .raw(value)]))
+    /// LSET at `index`. With `expected`, the element must still be that value (another client may have
+    /// pushed or popped since the page was read), otherwise `.conflict` is thrown and nothing changes.
+    public func listSet(_ key: RedisKey, index: Int, value: [UInt8], expected: [UInt8]? = nil) async throws {
+        let set = RedisCommand("LSET", [.key(key), .int(index), .raw(value)])
+        guard let expected else {
+            try await execute(set)
+            return
+        }
+        try await verifiedListEdit(key, index: index, expected: expected, commands: [set])
     }
 
     public func listPush(_ key: RedisKey, values: [[UInt8]], atHead: Bool) async throws {
@@ -160,10 +167,15 @@ extension RedisClient {
     }
 
     /// Removes the element at `index` (LSET to a unique marker, then LREM — atomically with MULTI when possible).
-    public func listRemove(_ key: RedisKey, index: Int) async throws {
+    /// With `expected`, the element must still be that value, otherwise `.conflict` is thrown.
+    public func listRemove(_ key: RedisKey, index: Int, expected: [UInt8]? = nil) async throws {
         let marker = RedisArgument("__ccinnredis_deleted_\(UUID().uuidString)__")
         let set = RedisCommand("LSET", [.key(key), .int(index), marker])
         let remove = RedisCommand("LREM", [.key(key), "1", marker])
+        if let expected {
+            try await verifiedListEdit(key, index: index, expected: expected, commands: [set, remove])
+            return
+        }
         if deployment.isProxy {
             try await execute(set)
             try await execute(remove)
@@ -171,6 +183,44 @@ extension RedisClient {
         }
         let replies = try await executeTransaction([set, remove], key: key)
         if let failure = replies.first(where: \.isError)?.errorMessage { throw RedisError.server(failure) }
+    }
+
+    static func listConflict(_ key: RedisKey, index: Int) -> RedisError {
+        RedisError(.conflict, "Item \(index) of \(key.display) changed since it was loaded (another client modified the list). Nothing was changed; reload and try again.")
+    }
+
+    /// WATCH + LINDEX + MULTI/EXEC on one leased connection, so the check and the edit are atomic.
+    /// Proxies have no WATCH/MULTI: there the check is best-effort (LINDEX, then the commands).
+    private func verifiedListEdit(_ key: RedisKey, index: Int, expected: [UInt8], commands: [RedisCommand]) async throws {
+        try enforceReadOnly(commands)
+        let lindex = RedisCommand("LINDEX", [.key(key), .int(index)])
+        if deployment.isProxy {
+            guard try await execute(lindex).bytes == expected else { throw Self.listConflict(key, index: index) }
+            for command in commands { try await execute(command) }
+            return
+        }
+        let target = try endpoint(for: lindex, route: .key(key))
+        let node = try await self.node(target)
+        let timeout = configuration.commandTimeout
+        try await node.withConnection { connection in
+            let checked = try await connection.pipeline([RedisCommand("WATCH", [.key(key)]), lindex], timeout: timeout)
+            if let failure = checked.first(where: \.isError)?.errorMessage {
+                _ = try? await connection.pipeline([RedisCommand("UNWATCH")], timeout: timeout)
+                throw RedisError.server(failure)
+            }
+            guard checked[1].bytes == expected else {
+                _ = try await connection.pipeline([RedisCommand("UNWATCH")], timeout: timeout)
+                throw Self.listConflict(key, index: index)
+            }
+            let replies = try await connection.pipeline([RedisCommand("MULTI")] + commands + [RedisCommand("EXEC")], timeout: timeout)
+            guard let exec = replies.last else { throw RedisError(.protocolViolation, "No EXEC reply") }
+            if let message = exec.errorMessage { throw RedisError.server(message) }
+            if let failure = replies.dropLast().first(where: \.isError)?.errorMessage {
+                throw RedisError.server(failure)
+            }
+            guard let results = exec.array else { throw Self.listConflict(key, index: index) } // WATCH fired
+            if let failure = results.first(where: \.isError)?.errorMessage { throw RedisError.server(failure) }
+        }
     }
 
     /// MULTI … EXEC on the node owning `key`; returns the EXEC results.
