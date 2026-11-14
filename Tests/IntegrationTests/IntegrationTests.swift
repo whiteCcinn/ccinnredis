@@ -371,6 +371,17 @@ struct ClusterIntegrationTests {
         #expect(values.array?.allSatisfy { $0.string == "v" } == true)
         #expect(try await client.delete(keys) == 50)
         #expect(try await client.dbSize() >= 2350)
+        // Verified list edits run WATCH/LINDEX/MULTI on the node that owns the key's slot.
+        for name in ["it:cluster:list:a", "it:cluster:list:b", "it:cluster:list:c"] {
+            let list = RedisKey(name)
+            _ = try await client.delete([list])
+            try await client.listPush(list, values: ["x", "y"].map { Array($0.utf8) }, atHead: false)
+            try await client.listSet(list, index: 1, value: Array("Y".utf8), expected: Array("y".utf8))
+            await #expect(throws: RedisError.self) { try await client.listRemove(list, index: 0, expected: Array("nope".utf8)) }
+            try await client.listRemove(list, index: 0, expected: Array("x".utf8))
+            #expect(try await client.listRange(list, start: 0, stop: -1) == [Array("Y".utf8)])
+            _ = try await client.delete([list])
+        }
         let nodes = try await client.clusterNodes()
         #expect(nodes.count == 6)
         #expect(nodes.filter { $0.role == .master }.map(\.slotCount).reduce(0, +) == 16384)

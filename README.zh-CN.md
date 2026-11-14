@@ -160,7 +160,7 @@ CcinnRedis 内置 [Model Context Protocol](https://modelcontextprotocol.io) 服�
 
 **安全模型。**
 - 每个连接默认关闭 AI 访问，必须手动开启；`--read-only` 会限制所有连接。
-- CcinnRedis 使用自己的命令表（以及服务器 `COMMAND` 返回的标志）对每条 `run_command` 进行分类，在发送之前就拒绝写命令、`KEYS`、`FLUSH*`、`CONFIG SET`、`DEBUG`、`SHUTDOWN`、`MONITOR`、`SUBSCRIBE`、脚本与 Functions、`CLIENT KILL`/`PAUSE`、读取 ACL 用户、阻塞读取、事务、`SELECT`、`AUTH` 以及未知命令。`CONFIG GET` 回复中的敏感值（`requirepass`、`masterauth` 等）会被隐去。只读连接在客户端内部也会拦截写命令。
+- CcinnRedis 使用自己的命令表（以及服务器 `COMMAND` 返回的标志）对每条 `run_command` 进行分类，在发送之前就拒绝写命令、`KEYS`、`FLUSH*`、`CONFIG SET`、`DEBUG`、`SHUTDOWN`、`MONITOR`、`SUBSCRIBE`、脚本与 Functions、`CLIENT KILL`/`PAUSE`、读取 ACL 用户、阻塞读取、事务、`SELECT`、`AUTH` 以及未知命令。读取必须有界：返回整个集合的命令（`HGETALL`、`SMEMBERS`、`HKEYS` 等）会被拒绝，请改用分页的 `get_key`；范围与数量（`LRANGE`、`ZRANGE`、`XRANGE`、`SCAN … COUNT`、`SRANDMEMBER` 等）最多 1000 个元素。`CONFIG GET` 回复中的敏感值（`requirepass`、`masterauth` 等）以及 `SLOWLOG GET` 中的参数会被隐去。只读连接在客户端内部也会拦截写命令，标记为只读的连接永远不会获得写工具。
 - 限制：默认每次 200 条、最多 1,000 条，每个结果约 256 KB（被截断时带 `truncated: true`），每次调用默认 30 秒、最多 120 秒。在客户端取消请求会关闭正在执行该请求的连接。
 - 密码和 SSH 密钥始终保存在钥匙串中，绝不会出现在命令行，也不会返回给客户端。
 - 每次工具调用都会追加记录到 `~/Library/Application Support/CcinnRedis/mcp-audit.jsonl`（时间、连接、工具、脱敏后的命令或键名、耗时、条目数、错误）。`set_string` 写入的值和任何密钥都不会被记录。

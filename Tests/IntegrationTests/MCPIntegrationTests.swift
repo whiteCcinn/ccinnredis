@@ -151,9 +151,15 @@ struct MCPIntegrationTests {
         #expect(list.payload["items"]?.array?.first?.string == "item-10")
         #expect(list.payload["length"]?.int == 10_000)
 
-        let command = try await server.call("run_command", ["connection": "local72", "command": "ZRANGE demo:zset:weights 0 -1 WITHSCORES"])
+        let command = try await server.call("run_command", ["connection": "local72", "command": "ZRANGE demo:zset:weights 0 99 WITHSCORES"])
         #expect(!command.isError)
         #expect(command.payload["text"]?.string?.contains("alpha") == true)
+        // Unbounded reads are refused with a hint (review finding 9).
+        let unbounded = try await server.call("run_command", ["connection": "local72", "command": "ZRANGE demo:zset:weights 0 -1"])
+        #expect(unbounded.isError)
+        let everything = try await server.call("run_command", ["connection": "local72", "command": "HGETALL demo:hash:user:1"])
+        #expect(everything.isError)
+        #expect(everything.payload.compactString.contains("get_key"))
         let denied = try await server.call("run_command", ["connection": "local72", "command": "SET x 1"])
         #expect(denied.isError)
         let flush = try await server.call("run_command", ["connection": "writable72", "command": "FLUSHALL"])
