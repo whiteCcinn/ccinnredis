@@ -50,6 +50,11 @@ public struct InfoSnapshot: Sendable, Equatable {
         public var entries: [(key: String, value: String)]
         public var id: String { name }
 
+        public init(name: String, entries: [(key: String, value: String)]) {
+            self.name = name
+            self.entries = entries
+        }
+
         public static func == (lhs: Section, rhs: Section) -> Bool {
             lhs.name == rhs.name && lhs.entries.elementsEqual(rhs.entries) { $0.key == $1.key && $0.value == $1.value }
         }

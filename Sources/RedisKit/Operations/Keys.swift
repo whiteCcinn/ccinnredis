@@ -58,6 +58,12 @@ public struct KeyMetadata: Sendable, Hashable {
     public var type: KeyType
     /// Remaining time to live in milliseconds; `nil` = persistent; key missing when `type == .none`.
     public var ttlMilliseconds: Int64?
+
+    public init(key: RedisKey, type: KeyType, ttlMilliseconds: Int64?) {
+        self.key = key
+        self.type = type
+        self.ttlMilliseconds = ttlMilliseconds
+    }
 }
 
 /// Everything shown in a key editor header.

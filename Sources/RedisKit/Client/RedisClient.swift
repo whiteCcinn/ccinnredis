@@ -55,6 +55,7 @@ public final class RedisClient: Sendable {
         var extraSpecs: [String: CommandSpec] = [:]
         var notes: [String] = []
         var info: InfoSnapshot?
+        var database = 0
     }
 
     static let maxRedirects = 6
@@ -65,7 +66,9 @@ public final class RedisClient: Sendable {
         self.tunnels = tunnels
         registry = NodeRegistry(basePlan: configuration.basePlan, connector: connector, poolSize: configuration.poolSize,
                                 commandTimeout: configuration.commandTimeout, limits: configuration.limits)
-        state = OSAllocatedUnfairLockBox(State(primary: primary))
+        var initial = State(primary: primary)
+        initial.database = configuration.database
+        state = OSAllocatedUnfairLockBox(initial)
         (events, eventSink) = AsyncStream.makeStream(of: ClientEvent.self, bufferingPolicy: .bufferingNewest(32))
     }
 
@@ -84,6 +87,8 @@ public final class RedisClient: Sendable {
     /// The INFO reply seen while connecting (nil when INFO is unavailable).
     public var initialInfo: InfoSnapshot? { state.value.info }
     public var isTunnelled: Bool { tunnels != nil }
+    /// Database selected for pooled connections.
+    public var database: Int { state.value.database }
     public var usesTLS: Bool { configuration.tls != nil }
 
     /// Writes are blocked by the profile or because the connection is to a replica.
@@ -580,6 +585,24 @@ public final class RedisClient: Sendable {
         eventSink.finish()
     }
 
+    /// Switches pooled connections to another database (verified on a fresh connection first).
+    public func selectDatabase(_ index: Int) async throws {
+        guard index >= 0 else { throw RedisError(.invalidArgument, "Database index must be 0 or more") }
+        guard !deployment.isCluster else { throw RedisError(.unsupported, "Redis Cluster only has database 0.") }
+        guard capabilities.supports(.select) else {
+            throw RedisError(.unsupported, capabilities[.select].reason ?? "SELECT is not available")
+        }
+        let target = primaryEndpoint
+        var plan = await registry.plan
+        plan.database = index
+        let node = try await registry.node(target)
+        let (probe, _) = try await node.dedicatedConnection(plan: plan)
+        await probe.close()
+        await registry.updateAll { $0.database = index }
+        await registry.resetPools()
+        state.withLock { $0.database = index }
+    }
+
     /// Marks a feature unavailable after a runtime `unknown command` (e.g. UNLINK through a proxy).
     public func markUnavailable(_ feature: Capabilities.Feature, reason: String) {
         let changed = state.withLock { state -> Bool in
@@ -592,7 +615,7 @@ public final class RedisClient: Sendable {
 
     // MARK: Read-only enforcement (design D14)
 
-    func enforceReadOnly(_ commands: [RedisCommand]) throws {
+    public func enforceReadOnly(_ commands: [RedisCommand]) throws {
         guard isReadOnly else { return }
         for command in commands {
             guard let spec = spec(for: command) else {

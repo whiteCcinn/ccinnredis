@@ -48,6 +48,15 @@ actor NodeRegistry {
 
     var endpoints: [Endpoint] { Array(nodes.keys) }
 
+    /// Closes every pool so new connections are made with the updated plan (e.g. another database).
+    func resetPools() async {
+        let all = nodes.values
+        nodes.removeAll()
+        for node in all { await node.close() }
+    }
+
+    var plan: HandshakePlan { basePlan }
+
     func closeAll() async {
         isClosed = true
         let all = nodes.values

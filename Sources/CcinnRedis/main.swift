@@ -1,1 +1,2 @@
-print("CcinnRedis")
+// CcinnRedis — a native Redis client for macOS.
+CcinnRedisApp.main()
