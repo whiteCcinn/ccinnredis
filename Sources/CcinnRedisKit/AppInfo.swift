@@ -6,7 +6,7 @@ public enum AppInfo {
     /// One line for the About window.
     public static let tagline = "A fast, native Redis and Valkey client for macOS."
     /// Used when there is no app bundle (`swift run`); keep in step with `scripts/build-app.sh`.
-    public static let fallbackVersion = "1.1.0"
+    public static let fallbackVersion = "1.2.0"
     public static let repository = GitHubRepository(owner: "whiteCcinn", name: "ccinnredis")
 
     public static var version: String {

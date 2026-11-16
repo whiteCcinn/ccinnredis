@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-17
+
 ### Added
 
 - **Multiple windows made easy.** File ▸ **New Window with This Connection** (⇧⌘N) and the toolbar's **New Window** button open the current connection in another window, with the secrets already in use (password, Sentinel password, SSH secret, TLS key password) and the database you are browsing, so unsaved connections and secrets that are not in the Keychain work too; nothing is saved. Saved connections have **Open in New Window**, and the connection screen has a **New Window** button. Every window keeps its own connection; closing one disconnects only that window.
@@ -44,6 +46,7 @@ First public release.
 
 - Redis 5.0.x crashes (server assertion in `lazyfree.c`) when `UNLINK` frees a stream whose consumer groups were all destroyed; CcinnRedis deletes streams with `DEL` on Redis 5.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/whiteCcinn/ccinnredis/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/whiteCcinn/ccinnredis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/whiteCcinn/ccinnredis/releases/tag/v1.0.0
