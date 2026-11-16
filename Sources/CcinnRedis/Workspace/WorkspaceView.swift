@@ -5,6 +5,7 @@ import SwiftUI
 struct WorkspaceView: View {
     @Bindable var workspace: WorkspaceModel
     let session: WindowSession
+    @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     var body: some View {
@@ -34,6 +35,15 @@ struct WorkspaceView: View {
                 ConnectionBadge(workspace: workspace)
             }
             ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Button("New Window with This Connection", action: openDuplicateWindow)
+                    Button("New Window") { openWindow(id: RootView.windowGroupID) }
+                } label: {
+                    Label("New Window", systemImage: "macwindow.badge.plus")
+                } primaryAction: {
+                    openDuplicateWindow()
+                }
+                .help("Open this connection in another window (⇧⌘N); each window has its own connection")
                 Button { workspace.openConsole() } label: { Label("Console", systemImage: "terminal") }
                     .help("New console (⌘T)")
                 Button { workspace.open(.dashboard) } label: { Label("Dashboard", systemImage: WorkspaceModel.Tool.dashboard.icon) }
@@ -62,6 +72,10 @@ struct WorkspaceView: View {
         .sheet(isPresented: $workspace.showConnectionInfo) {
             ConnectionInfoView(workspace: workspace)
         }
+    }
+
+    private func openDuplicateWindow() {
+        if let request = session.duplicateRequest() { openWindow(id: RootView.windowGroupID, value: request) }
     }
 }
 

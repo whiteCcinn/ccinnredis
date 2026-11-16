@@ -7,6 +7,7 @@ import SwiftUI
 struct ConnectionsView: View {
     @Bindable var session: WindowSession
     let store: ProfileStore
+    @Environment(\.openWindow) private var openWindow
 
     @State private var selection: UUID?
     @State private var draft: ConnectionDraft?
@@ -19,13 +20,25 @@ struct ConnectionsView: View {
         } detail: {
             detail
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    openWindow(id: RootView.windowGroupID)
+                } label: {
+                    Label("New Window", systemImage: "macwindow.badge.plus")
+                }
+                .help("Open another window with its own connection (⌘N)")
+            }
+        }
         .onChange(of: selection) { _, newValue in
             if let profile = store.profile(id: newValue) { draft = ConnectionDraft(profile: profile, store: store) }
         }
         .onAppear {
-            if LaunchArguments.has("--new-connection") {
+            let launch = LaunchArguments.consumeConnectionScreenArguments()
+            if launch, LaunchArguments.has("--new-connection") {
                 newConnection()
-            } else if let name = LaunchArguments.value("--edit-profile"), let profile = store.profiles.first(where: { $0.displayName == name }) {
+            } else if launch, let name = LaunchArguments.value("--edit-profile"),
+                      let profile = store.profiles.first(where: { $0.displayName == name }) {
                 selection = profile.id
                 draft = ConnectionDraft(profile: profile, store: store)
             } else if draft == nil, let first = store.favorites.first ?? store.recents.first ?? store.others.first {
@@ -99,6 +112,7 @@ struct ConnectionsView: View {
                 .tag(profile.id)
                 .contextMenu {
                     Button("Connect") { session.connect(profile: profile, store: store) }
+                    Button("Open in New Window") { openWindow(id: RootView.windowGroupID, value: WindowSession.request(opening: profile)) }
                     Divider()
                     Button(profile.isFavorite ? "Remove from Favorites" : "Add to Favorites") { store.toggleFavorite(profile) }
                     Button("Duplicate") { if let copy = store.duplicate(profile) { selection = copy.id } }

@@ -80,6 +80,19 @@ struct ProfileTests {
         #expect(cluster.addressMap.rules.count == 1)
     }
 
+    @Test func secretsAreRecoveredFromTheClientConfiguration() throws {
+        // A window duplicates its connection from the configuration the client was opened with.
+        var profile = ConnectionProfile(name: "s", mode: .sentinel)
+        profile.sentinelNodes = "127.0.0.1:17311"
+        profile.sentinelMasterName = "mymaster"
+        profile.tls = TLSOptions(clientCertificateFile: "/tmp/client.p12")
+        profile.ssh = SSHTunnelConfiguration(host: "bastion", username: "ops", authentication: .password)
+        let secrets = ProfileSecrets(password: "pw", sentinelPassword: "sp", sshSecret: "ssh", tlsCertificatePassword: "p12")
+        #expect(ProfileSecrets(configuration: try profile.clientConfiguration(secrets: secrets)) == secrets)
+        #expect(ProfileSecrets(configuration: try profile.clientConfiguration(secrets: ProfileSecrets())) == ProfileSecrets())
+        #expect(ProfileSecrets(configuration: try profile.clientConfiguration(secrets: ProfileSecrets(password: ""))).password == nil)
+    }
+
     @Test func validation() {
         var profile = ConnectionProfile(host: "")
         #expect(!profile.validationErrors.isEmpty)

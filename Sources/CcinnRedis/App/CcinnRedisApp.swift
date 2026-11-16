@@ -8,8 +8,9 @@ struct CcinnRedisApp: App {
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
 
     var body: some Scene {
-        WindowGroup("CcinnRedis", id: "main") {
-            RootView()
+        // Every window has its own connection. A request opens a window that connects right away.
+        WindowGroup("CcinnRedis", id: RootView.windowGroupID, for: WindowRequest.self) { $request in
+            RootView(request: request)
                 .frame(minWidth: 1080, minHeight: 660)
                 .preferredColorScheme(LaunchArguments.appearanceOverride ?? AppearancePreference(rawValue: appearance)?.colorScheme)
                 .tint(Theme.accent)
@@ -58,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Per-window root: connection manager, progress, or workspace.
 struct RootView: View {
+    static let windowGroupID = "main"
+
+    /// Set when the window was opened for a connection (New Window with This Connection, Open in New Window).
+    let request: WindowRequest?
+    @Environment(\.openWindow) private var openWindow
     @State private var session = WindowSession()
     private let store = AppServices.shared.profiles
 
@@ -80,7 +86,11 @@ struct RootView: View {
         .navigationTitle(windowTitle)
         .presentsSoftwareUpdates()
         .onDisappear { session.disconnect() }
-        .task { LaunchArguments.consume(into: session, store: store) }
+        .task {
+            // Only windows this process opened connect by themselves; a restored request behaves like no request.
+            if let request, session.connect(request, store: store) { return }
+            LaunchArguments.consume(into: session, store: store) { openWindow(id: Self.windowGroupID, value: $0) }
+        }
     }
 
     private var phaseKey: Int {
@@ -128,10 +138,12 @@ struct ConnectingView: View {
 /// `  [--user u] [--password p] [--db n] [--tls-ca file] [--readonly] [--proxy twemproxy|envoy|…] [--profile name]`
 /// `  [--open console|dashboard|info|slowlog|clients|config|cluster|pubsub|analysis|connection] [--key name]`
 /// `  [--console "CMD; CMD"] [--pattern glob] [--type hash] [--load-all] [--expand prefix:] [--run-analysis]`
-/// `  [--appearance light|dark] [--profiles-directory dir] [--demo-profiles] [--new-connection]`
+/// `  [--appearance light|dark] [--profiles-directory dir] [--demo-profiles] [--new-connection] [--edit-profile name]`
+/// `  [--duplicate-window]` (opens a second window with the same connection once connected)
 @MainActor
 enum LaunchArguments {
     private static var consumed = false
+    private static var connectionScreenConsumed = false
     private static let arguments = ProcessInfo.processInfo.arguments
 
     static func value(_ flag: String) -> String? {
@@ -149,7 +161,15 @@ enum LaunchArguments {
         }
     }
 
-    static func consume(into session: WindowSession, store: ProfileStore) {
+    /// `true` once: the first connection screen applies `--new-connection` / `--edit-profile`, windows opened later
+    /// show the usual connection screen.
+    static func consumeConnectionScreenArguments() -> Bool {
+        guard !connectionScreenConsumed else { return false }
+        connectionScreenConsumed = true
+        return true
+    }
+
+    static func consume(into session: WindowSession, store: ProfileStore, openWindow: @escaping @MainActor (WindowRequest) -> Void) {
         guard !consumed else { return }
         consumed = true
         var profile: ConnectionProfile?
@@ -178,7 +198,8 @@ enum LaunchArguments {
         if has("--readonly") { profile.readOnly = true }
         if let proxy = value("--proxy").flatMap(ProxyChoice.init(rawValue:)) { profile.proxy = proxy }
         if let delimiter = value("--delimiter") { profile.delimiter = delimiter }
-        session.connect(profile: profile, store: store, secrets: secrets) { workspace in
+        session.connect(profile: profile, store: store, secrets: secrets) { [weak session] workspace in
+            if has("--duplicate-window"), let request = session?.duplicateRequest() { openWindow(request) }
             Task { @MainActor in await applyWorkspaceArguments(workspace) }
         }
     }
@@ -252,8 +273,9 @@ enum DemoProfiles {
     }
 }
 
-/// `--snapshot <file.png> [--snapshot-delay seconds] [--quit-after-snapshot]`: renders the key window
-/// into a PNG (used for automated visual checks; needs no screen-recording permission).
+/// `--snapshot <file.png> [--snapshot-delay seconds] [--quit-after-snapshot]`: renders the frontmost window
+/// (with `--duplicate-window`, the new one) into a PNG (used for automated visual checks; needs no screen-recording
+/// permission).
 @MainActor
 enum SnapshotTool {
     static func scheduleIfRequested() {
@@ -261,7 +283,9 @@ enum SnapshotTool {
         let delay = LaunchArguments.value("--snapshot-delay").flatMap(Double.init) ?? 6
         let quit = LaunchArguments.has("--quit-after-snapshot")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            if let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.frame.width > 400 }),
+            let isCandidate = { (window: NSWindow) in window.isVisible && !window.isSheet && window.contentView != nil && window.frame.width > 400 }
+            // `orderedWindows` is front to back; the app may not be active (snapshots run as an accessory app).
+            if let window = NSApp.orderedWindows.first(where: isCandidate) ?? NSApp.windows.first(where: isCandidate),
                let view = window.contentView?.superview ?? window.contentView,
                let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                 view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -408,9 +432,17 @@ extension FocusedValues {
 
 struct AppCommands: Commands {
     @FocusedValue(\.windowSession) private var session
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
+            // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.
+            Button("New Window with This Connection") {
+                if let request = session?.duplicateRequest() { openWindow(id: RootView.windowGroupID, value: request) }
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(session?.workspace == nil)
+            Divider()
             Button("New Console") { session?.workspace?.openConsole() }
                 .keyboardShortcut("t", modifiers: .command)
                 .disabled(session?.workspace == nil)

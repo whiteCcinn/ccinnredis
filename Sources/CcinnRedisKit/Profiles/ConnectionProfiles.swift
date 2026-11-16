@@ -286,6 +286,12 @@ public struct ProfileSecrets: Sendable, Equatable {
         self.sshSecret = sshSecret
         self.tlsCertificatePassword = tlsCertificatePassword
     }
+
+    /// The secrets a client was opened with (`ConnectionProfile.clientConfiguration(secrets:)` in reverse).
+    public init(configuration: ClientConfiguration) {
+        self.init(password: configuration.credentials.password, sentinelPassword: configuration.sentinelCredentials.password,
+                  sshSecret: configuration.sshSecret, tlsCertificatePassword: configuration.clientCertificatePassword)
+    }
 }
 
 // MARK: - Secrets
