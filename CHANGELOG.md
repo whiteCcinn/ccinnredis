@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-16
+
 ### Added
 
 - **Check for Updates…** in the app menu. When a newer release exists, CcinnRedis shows its version and release notes. **Download & Open** downloads the disk image, verifies its size and SHA-256 against the release's `SHA256SUMS.txt`, saves it to Downloads without overwriting anything, and opens it. **Release Page**, **Skip This Version** and **Later** are also available.
@@ -34,5 +36,6 @@ First public release.
 
 - Redis 5.0.x crashes (server assertion in `lazyfree.c`) when `UNLINK` frees a stream whose consumer groups were all destroyed; CcinnRedis deletes streams with `DEL` on Redis 5.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/whiteCcinn/ccinnredis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/whiteCcinn/ccinnredis/releases/tag/v1.0.0
