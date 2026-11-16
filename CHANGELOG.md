@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Multiple windows made easy.** File ▸ **New Window with This Connection** (⇧⌘N) and the toolbar's **New Window** button open the current connection in another window, with the secrets already in use (password, Sentinel password, SSH secret, TLS key password) and the database you are browsing, so unsaved connections and secrets that are not in the Keychain work too; nothing is saved. Saved connections have **Open in New Window**, and the connection screen has a **New Window** button. Every window keeps its own connection; closing one disconnects only that window.
+
+### Fixed
+
+- Closing a window while it is still connecting cancels the connection attempt. The connection used to finish in the background and stay open, SSH tunnel included.
+
 ## [1.1.0] - 2026-11-16
 
 ### Added

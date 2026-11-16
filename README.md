@@ -38,6 +38,7 @@ CcinnRedis ships its **own pure-Swift Redis stack** — a bounded RESP2/RESP3 pa
 - **Every server generation** — `HELLO 3` (RESP3) when available with automatic fallback to RESP2; `AUTH password` or ACL `AUTH user password`; capabilities (SCAN, SCAN TYPE, UNLINK, MEMORY USAGE, streams, functions, CLUSTER SHARDS, hash-field TTL…) detected from `INFO`, `COMMAND` and probing — never from assumptions.
 - **Every deployment** — standalone, read-only replicas, **Sentinel** (resolves the master, follows failovers), **Redis Cluster** (slot map, `MOVED`/`ASK`, per-master scans, multi-key commands split by slot, topology view) and **proxies** — twemproxy/nutcracker, Codis, Predixy, Envoy and cloud proxy endpoints are detected and degrade gracefully with explanations instead of errors.
 - **Connectivity** — `redis://`, `rediss://` (TLS with custom CA, client certificates), `unix://` sockets, `redis-sentinel://` and `redis-cluster://` URIs, **SSH tunnels** through your system OpenSSH (one forward per discovered node), and address maps for NAT/Docker clusters.
+- **Multiple windows** — every window has its own connection, so two servers sit side by side or one server shows in two windows. File ▸ New Window (⌘N) opens the connection screen; **New Window with This Connection** (⇧⌘N, or the toolbar's New Window button) opens the current connection again, with the secrets in use and the database you are browsing; saved connections have **Open in New Window**. Closing a window disconnects only that window.
 - **Key browser for millions of keys** — incremental `SCAN` (never `KEYS`), pattern and type filters, tree grouping by a delimiter with per-folder counts, a virtualised table, and lazy type/TTL loading for visible rows.
 - **Editors for every type** — strings (text, JSON, hex), hashes, lists, sets, sorted sets, streams with consumer groups, consumers and pending entries, and **RedisJSON** documents; TTL, rename and delete (`UNLINK` when available).
 - **Console** — redis-cli compatible input and output (RESP3 maps, sets, doubles…), command and key completion with syntax hints, per-profile history with secrets redacted, `SUBSCRIBE`/`MONITOR` streaming, cluster routing by key.
@@ -105,7 +106,7 @@ The project page, release notes and issue tracker are also in the **Help** menu 
 2. Press **Test** — it reports the server, deployment, protocol and key count — then **Save & Connect**.
 3. Filter keys with a glob such as `user:*`, pick a type, and open a key. **⌘T** opens a console.
 
-Useful shortcuts: **⌘T** new console · **⇧⌘R** reload keys · **⌥⌘I** connection details and capabilities · **⇧⌘D** disconnect · **⇧⌘[ / ]** switch tabs · in the console **↑/↓** history, **Tab**/**⌃Space** completion, **⇧↩** newline.
+Useful shortcuts: **⌘N** new window · **⇧⌘N** new window with this connection · **⌘T** new console · **⇧⌘R** reload keys · **⌥⌘I** connection details and capabilities · **⇧⌘D** disconnect · **⇧⌘[ / ]** switch tabs · in the console **↑/↓** history, **Tab**/**⌃Space** completion, **⇧↩** newline.
 
 ## Deployment modes
 
