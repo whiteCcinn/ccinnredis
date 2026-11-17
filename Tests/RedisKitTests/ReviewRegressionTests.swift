@@ -78,6 +78,24 @@ struct RedisKitReviewRegressionTests {
         #expect(SSHTunnel.askPassSecret(for: .privateKey, secret: "pp") == "pp")
     }
 
+    // With `ControlMaster auto` in ~/.ssh/config, an app tunnel used to become the shared master: closing its window
+    // then cut every session multiplexed over it. Tunnels never become a master; existing masters stay usable, so
+    // ControlPath is left to the user's configuration.
+    @Test func sshTunnelsNeverBecomeASharedControlMaster() throws {
+        let remotes = [Endpoint(host: "10.0.0.1", port: 6379), .unixSocket("/var/run/redis.sock")]
+        for authentication in SSHTunnelConfiguration.Authentication.allCases {
+            for remote in remotes {
+                let configuration = SSHTunnelConfiguration(host: "bastion", username: "ops", authentication: authentication, privateKeyPath: "/tmp/key")
+                let arguments = try SSHTunnel.arguments(for: configuration, localPort: 5000, remote: remote)
+                let options = zip(arguments, arguments.dropFirst()).filter { $0.0 == "-o" }.map(\.1)
+                #expect(options.filter { $0.hasPrefix("ControlMaster=") } == ["ControlMaster=no"])
+                #expect(!options.contains { $0.hasPrefix("ControlPath=") }, "existing masters must keep working")
+                // ssh reads everything after the destination as the remote command.
+                #expect(arguments.last == "ops@bastion")
+            }
+        }
+    }
+
     // Finding 3: list edits by index verify the element they were shown, atomically (WATCH + MULTI).
     @Test func listEditsVerifyTheExpectedElement() async throws {
         let list = WatchedList(["a", "b", "c"])
