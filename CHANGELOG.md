@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-17
+
+### Fixed
+
+- SSH tunnels no longer become a shared connection master. With `ControlMaster auto` in `~/.ssh/config`, the tunnel of one CcinnRedis window could become the master that other windows and your own terminal sessions were multiplexed over, so closing that window cut them all. Tunnels now pass `-o ControlMaster=no`; an existing master of yours is still used.
+
+### Docs
+
+- The File menu item that opens an empty window is **New CcinnRedis Window** (⌘N); the README called it "New Window".
+
 ## [1.2.0] - 2026-11-17
 
 ### Added
@@ -46,7 +56,8 @@ First public release.
 
 - Redis 5.0.x crashes (server assertion in `lazyfree.c`) when `UNLINK` frees a stream whose consumer groups were all destroyed; CcinnRedis deletes streams with `DEL` on Redis 5.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnredis/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/whiteCcinn/ccinnredis/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/whiteCcinn/ccinnredis/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/whiteCcinn/ccinnredis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/whiteCcinn/ccinnredis/releases/tag/v1.0.0
