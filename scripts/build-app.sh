@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="CcinnRedis"
 BUNDLE_ID="io.github.whiteccinn.ccinnredis"
-VERSION="${CCINNREDIS_VERSION:-1.2.1}"
+VERSION="${CCINNREDIS_VERSION:-1.2.2}"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 ICON="$ROOT/Resources/AppIcon.icns"
