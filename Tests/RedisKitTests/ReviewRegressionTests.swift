@@ -79,20 +79,44 @@ struct RedisKitReviewRegressionTests {
     }
 
     // With `ControlMaster auto` in ~/.ssh/config, an app tunnel used to become the shared master: closing its window
-    // then cut every session multiplexed over it. Tunnels never become a master; existing masters stay usable, so
-    // ControlPath is left to the user's configuration.
-    @Test func sshTunnelsNeverBecomeASharedControlMaster() throws {
+    // then cut every session multiplexed over it. `ControlMaster=no` alone still let the tunnel attach to a running
+    // master as a mux client: the master then owned the forwarded listener, which outlived the tunnel and bypassed
+    // the profile's authentication. Tunnels neither become nor use a master.
+    @Test func sshTunnelsNeverUseOrBecomeASharedControlMaster() throws {
         let remotes = [Endpoint(host: "10.0.0.1", port: 6379), .unixSocket("/var/run/redis.sock")]
         for authentication in SSHTunnelConfiguration.Authentication.allCases {
             for remote in remotes {
                 let configuration = SSHTunnelConfiguration(host: "bastion", username: "ops", authentication: authentication, privateKeyPath: "/tmp/key")
                 let arguments = try SSHTunnel.arguments(for: configuration, localPort: 5000, remote: remote)
-                let options = zip(arguments, arguments.dropFirst()).filter { $0.0 == "-o" }.map(\.1)
-                #expect(options.filter { $0.hasPrefix("ControlMaster=") } == ["ControlMaster=no"])
-                #expect(!options.contains { $0.hasPrefix("ControlPath=") }, "existing masters must keep working")
+                #expect(Self.sshOptionValues("ControlMaster", in: arguments) == ["no"], "\(authentication)")
+                #expect(Self.sshOptionValues("ControlPath", in: arguments) == ["none"], "\(authentication): no other ControlPath")
+                // `-S ctl_path` and `-M` are the command-line spellings of ControlPath and ControlMaster.
+                #expect(!arguments.contains { $0.hasPrefix("-S") || $0.hasPrefix("-M") }, "\(authentication)")
                 // ssh reads everything after the destination as the remote command.
                 #expect(arguments.last == "ops@bastion")
             }
+        }
+    }
+
+    /// The values ssh reads for `keyword` from `-o key=value`, `-o "key value"` and `-okey=value`; keywords are
+    /// case-insensitive, as in ssh.
+    private static func sshOptionValues(_ keyword: String, in arguments: [String]) -> [String] {
+        var specifications: [String] = []
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+            if argument == "-o", arguments.index(after: index) < arguments.endIndex {
+                specifications.append(arguments[arguments.index(after: index)])
+                index = arguments.index(index, offsetBy: 2)
+                continue
+            }
+            if argument.hasPrefix("-o") { specifications.append(String(argument.dropFirst(2))) }
+            index = arguments.index(after: index)
+        }
+        return specifications.compactMap { specification in
+            guard let separator = specification.firstIndex(where: { $0 == "=" || $0.isWhitespace }),
+                  specification[..<separator].caseInsensitiveCompare(keyword) == .orderedSame else { return nil }
+            return specification[specification.index(after: separator)...].trimmingCharacters(in: .whitespaces)
         }
     }
 

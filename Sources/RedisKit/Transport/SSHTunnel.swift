@@ -172,9 +172,14 @@ public final class SSHTunnel: Sendable {
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=\(max(1, connectTimeout))",
             "-o", "NumberOfPasswordPrompts=1",
-            // Never become a shared master (`ControlMaster auto` in ~/.ssh/config): closing this tunnel would cut
-            // every session multiplexed over it. An existing master is still used, so ControlPath stays the user's.
+            // Never become or use a shared master. With `ControlMaster auto` in ~/.ssh/config this tunnel would become
+            // the master, and closing it would cut every session multiplexed over it. `ControlMaster=no` alone still
+            // joins a running master as a mux client: the master then owns the forwarded listener, which outlives this
+            // tunnel and keeps forwarding to Redis until the master exits, each connect leaks another forward, and the
+            // profile's authentication is bypassed. `ControlPath=none` (command-line values beat ~/.ssh/config) makes
+            // this ssh connect and own its listener itself; the user's own ssh sessions keep their master.
             "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
             "-L", "127.0.0.1:\(localPort):\(forwardTarget)",
             "-p", String(configuration.port),
         ]
